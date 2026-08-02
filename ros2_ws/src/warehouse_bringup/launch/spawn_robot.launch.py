@@ -27,8 +27,17 @@ def generate_launch_description():
         }.items(),
     )
 
+    tb3_rsp = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource([
+            get_package_share_directory('turtlebot3_gazebo'),
+            '/launch/robot_state_publisher.launch.py',
+        ]),
+        launch_arguments={'use_sim_time': 'true'}.items(),
+    )
+
     return LaunchDescription([
         set_tb3_model,
         set_gz_resource,
         tb3_spawn,
+        tb3_rsp,
     ])

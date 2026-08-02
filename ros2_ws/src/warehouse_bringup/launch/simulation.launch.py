@@ -17,4 +17,8 @@ def generate_launch_description():
         PythonLaunchDescriptionSource([pkg_dir, '/launch/spawn_robot.launch.py']),
     )
 
-    return LaunchDescription([gz_launch, robot_launch])
+    rviz_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource([pkg_dir, '/launch/rviz.launch.py']),
+    )
+
+    return LaunchDescription([gz_launch, robot_launch, rviz_launch])

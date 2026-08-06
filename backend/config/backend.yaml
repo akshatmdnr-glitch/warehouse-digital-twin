@@ -1,0 +1,78 @@
+# Warehouse Backend configuration.
+# Layered: defaults < this file < environment variables (BACKEND_*).
+service:
+  name: warehouse-backend
+  host: 0.0.0.0
+  port: 8090
+
+database:
+  path: ./data/warehouse.db
+  journal_mode: WAL
+  backup_dir: ./data/backups
+
+auth:
+  # secret: ''            # REQUIRED in production: BACKEND_AUTH_SECRET
+  token_ttl_seconds: 86400
+  admin_password: admin   # dev default; change with BACKEND_ADMIN_PASSWORD
+  enabled: true
+
+security:
+  rate_limit_per_minute: 120
+  cors_origins:
+    - '*'
+  secure_headers: true
+
+ingest:
+  batch_token: ''          # shared secret for the ROS ingest bridge
+
+retention:
+  robot_positions_days: 7
+  battery_history_days: 30
+  events_days: 90
+  queue_history_days: 90
+  analytics_snapshots_days: 90
+
+services:
+  cleanup_interval_seconds: 3600
+  archive_interval_seconds: 86400
+  backup_interval_seconds: 86400
+  backup_keep: 7
+  health_monitor_interval_seconds: 5
+  heartbeat_verification_interval_seconds: 3
+  heartbeat_timeout_seconds: 3
+
+analytics:
+  rolling_window: 20
+  report_hourly_minutes: 5
+
+logging:
+  level: INFO
+  file: ./data/logs/warehouse.log
+  max_bytes: 5242880
+  backup_count: 3
+
+monitoring:
+  sample_interval_seconds: 5
+  ring_size: 120
+
+dashboard:
+  backend_url: http://localhost:8081
+  check_interval: 10.0
+  allowed_origins:
+    - http://localhost:8081
+
+fleet:
+  heartbeat_timeout: 3.0
+  planner:
+    score_w_distance: 1.0
+    score_w_workload: 1.0
+    score_w_priority: 1.0
+    score_w_capability: 1.0
+  traffic:
+    segment_size: 2
+    traffic_lookahead: 1
+    reservation_buffer: 0
+    cell_size: 1.0
+  battery:
+    low_battery_threshold: 30.0
+    critical_battery_threshold: 15.0

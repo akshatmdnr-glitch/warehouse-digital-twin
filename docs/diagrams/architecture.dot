@@ -1,0 +1,34 @@
+digraph Architecture {
+  rankdir=TB;
+  node [shape=box, style=rounded, fontname="Helvetica", fontsize=11];
+  edge [fontname="Helvetica", fontsize=9, color="#5a6573"];
+
+  subgraph cluster_ros {
+    label="ROS 2 (Gazebo + fleet)"; color="#2c3640"; style=rounded;
+    sim [label="Simulation\nGazebo Harmonic\n(TurtleBot3 x N)"];
+    nav [label="Robot Stack\nAMCL · Planner · Controller\nObstacle Monitor · Task Manager"];
+    beacon [label="Robot Beacon\nregistration · heartbeat\npose · battery sim"];
+    fleet [label="Fleet Manager\nscoring dispatch · reservations\nsegments · recovery · battery\nmonitoring"];
+    analytics [label="Analytics\nrolling metrics"];
+    cc [label="Control Center\nSPA + REST + WS + commands"];
+    ingest [label="Ingest Bridge\nbatch forwarder + task relay"];
+    sim -> nav -> beacon;
+    nav -> fleet; beacon -> fleet; analytics -> fleet;
+    fleet -> cc; analytics -> cc; nav -> cc;
+    cc -> ingest;
+  }
+
+  subgraph cluster_backend {
+    label="Production Backend (FastAPI)"; color="#2c3640"; style=rounded;
+    api [label="REST API + WebSocket"];
+    auth [label="Auth (roles/tokens)"];
+    db [label="SQLite (persistence)"];
+    svc [label="Background services\ncleanup · archive · backup\nhealth · heartbeat · reports"];
+    mon [label="Monitoring"];
+    api -> auth; api -> db; svc -> db; mon -> db;
+  }
+
+  ingest -> api [label="POST /api/ingest (batches)"];
+  cc -> api [label="history proxy"];
+  db -> api [label="persisted state"];
+}

@@ -1,0 +1,5 @@
+/**:
+  ros__parameters:
+    stop_distance: 0.5
+    field_of_view: 60.0
+    min_safe_ranges: 3

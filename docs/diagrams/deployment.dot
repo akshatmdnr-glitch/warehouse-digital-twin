@@ -1,0 +1,28 @@
+digraph Deployment {
+  rankdir=LR;
+  node [shape=box, style=rounded, fontname="Helvetica", fontsize=11];
+  edge [fontname="Helvetica", fontsize=9, color="#5a6573"];
+
+  subgraph cluster_compose {
+    label="docker compose (single host)"; color="#2c3640"; style=rounded;
+    ros [label="warehouse-ros\nROS core + Gazebo + fleet\nControl Center (:8081) + ingest\n[ports 8080/8081/8082]"];
+    backend [label="warehouse-backend\nFastAPI REST + WS + Swagger\n[port 8090]"];
+    mon [label="warehouse-monitoring\n[port 9100]"];
+    dbvol [label="SQLite volume\n/data (persistent)"];
+    ros -> backend [label="POST /api/ingest + history proxy"];
+    mon -> backend [label="GET /api/monitoring"];
+    backend -> dbvol;
+  }
+
+  operator [label="Operator browser", shape=ellipse];
+  third [label="Third-party integrations", shape=ellipse];
+  operator -> ros [label="Control Center UI (8081)"];
+  operator -> backend [label="Swagger /docs (8090)"];
+  third -> backend [label="REST API + WebSocket"];
+
+  subgraph cluster_cicd {
+    label="CI/CD (GitHub Actions)"; color="#2c3640"; style=rounded;
+    ci [label="lint · backend tests · ROS build/tests · docker build"];
+  }
+  ci -> backend [label="image push"];
+}

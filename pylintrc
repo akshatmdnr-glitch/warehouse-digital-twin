@@ -1,0 +1,21 @@
+[MAIN]
+# Error-only linting: Fatal + Error messages gate the build. Convention,
+# refactor, warning and similar categories are stylistic and handled by
+# black/isort/flake8.
+disable =
+    all
+enable =
+    F,
+    E,
+    E1101,
+    E0602,
+    E1120,
+    E1136,
+    E1137,
+    E1130
+
+[FORMAT]
+max-line-length = 88
+
+[BASIC]
+good-names = i, j, k, x, y, e, f, t, dt, ok, cx, cy, ws

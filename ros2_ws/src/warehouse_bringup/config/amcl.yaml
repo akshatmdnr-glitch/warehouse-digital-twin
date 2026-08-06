@@ -1,0 +1,5 @@
+/**:
+  ros__parameters:
+    num_particles: 500
+    motion_noise_xy: 0.05
+    motion_noise_theta: 0.1

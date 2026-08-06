@@ -1,0 +1,28 @@
+# Production backend image (FastAPI + SQLite). No ROS dependencies.
+#
+# Build: docker build -f docker/Dockerfile.backend -t warehouse-backend .
+# Run:   docker run -p 8090:8090 -e BACKEND_AUTH_SECRET=... warehouse-backend
+
+FROM python:3.12-slim
+
+ENV PYTHONUNBUFFERED=1
+ENV BACKEND_DB_PATH=/data/warehouse.db
+ENV BACKEND_LOG_FILE=/data/logs/warehouse.log
+ENV BACKEND_PORT=8090
+
+WORKDIR /app
+
+COPY backend/requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY backend/ /app/
+COPY scripts/system_monitor.py /app/scripts/system_monitor.py
+COPY scripts/perf_benchmark.py /app/scripts/perf_benchmark.py
+
+RUN mkdir -p /data/logs && chmod -R 777 /data
+
+EXPOSE 8090
+
+VOLUME ["/data"]
+
+CMD ["python", "-m", "backend"]

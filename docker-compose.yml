@@ -1,0 +1,91 @@
+# Warehouse Digital Twin — one-command deployment.
+#
+#   docker compose up -d
+#
+# Services:
+#   backend    production API (REST + WebSocket + auth + persistence, SQLite)
+#   ros        ROS2 core + Gazebo + fleet + Control Center + ingest bridge
+#   monitoring monitoring dashboard (CPU/mem/nodes/API/DB status)
+#
+# All ROS nodes share one container (the ROS graph is single-host). The
+# backend + monitoring are separate. Data persists in named volumes.
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.backend
+    image: warehouse-backend
+    container_name: wdt-backend
+    restart: unless-stopped
+    ports:
+      - "8090:8090"          # REST + WebSocket + Swagger
+    environment:
+      - BACKEND_AUTH_SECRET=${BACKEND_AUTH_SECRET:-dev-secret-change-me}
+      - BACKEND_ADMIN_PASSWORD=${BACKEND_ADMIN_PASSWORD:-admin}
+      - BACKEND_DB_PATH=/data/warehouse.db
+      - BACKEND_LOG_FILE=/data/logs/warehouse.log
+      - BACKEND_PORT=8090
+    volumes:
+      - wdt-db:/data
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request;urllib.request.urlopen('http://localhost:8090/api/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  ros:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.ros
+    image: warehouse-ros
+    container_name: wdt-ros
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "8080:8080"          # read-only dashboard
+      - "8081:8081"          # Control Center UI
+      - "8082:8082"          # Control Center WebSocket
+    environment:
+      - TURTLEBOT3_MODEL=burger
+      # Headless Gazebo (no display). Use a virtual framebuffer if the world
+      # needs the rendering engine.
+      - DISPLAY=${DISPLAY:-}
+    volumes:
+      - wdt-ros-data:/tmp
+    command:
+      - ros2
+      - launch
+      - warehouse_bringup
+      - warehouse.launch.py
+      - backend_url:=http://backend:8090
+
+  monitoring:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.backend
+    image: warehouse-backend
+    container_name: wdt-monitoring
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "9100:9100"          # monitoring page + /metrics
+    environment:
+      - BACKEND_URL=http://backend:8090
+      - MONITOR_PORT=9100
+      - BACKEND_AUTH_SECRET=${BACKEND_AUTH_SECRET:-dev-secret-change-me}
+    command:
+      - python
+      - scripts/system_monitor.py
+      - --serve
+      - --port
+      - "9100"
+
+volumes:
+  wdt-db:
+  wdt-ros-data:

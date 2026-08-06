@@ -1,0 +1,21 @@
+digraph Sequence {
+  rankdir=LR;
+  node [shape=note, fontname="Helvetica", fontsize=10];
+  edge [fontname="Helvetica", fontsize=8, color="#5a6573"];
+
+  "Operator" -> "Control Center" [label="create task (POST /api/command)"];
+  "Control Center" -> "/add_task" [label="publish CSV task"];
+  "/add_task" -> "Fleet Manager" [label="subscribe"];
+  "Fleet Manager" -> "Fleet Manager" [label="score candidates\nreserve segments"];
+  "Fleet Manager" -> "/task_assignment" [label="robot_id,task,..."];
+  "/task_assignment" -> "Task Manager (robotN)" [label="subscribe (filtered)"];
+  "Task Manager" -> "Planner" [label="/goal_pose (pickup)"];
+  "Planner" -> "/plan" [label="A* path"];
+  "Task Manager" -> "Robot Beacon" [label="/task_state"];
+  "Robot Beacon" -> "Fleet Manager" [label="/robot_registration (current_task)"];
+  "Fleet Manager" -> "/fleet_status" [label="busy=true"];
+  "Ingest Bridge" -> "Backend /api/ingest" [label="batch (robots/tasks/events)"];
+  "Backend" -> "SQLite" [label="persist + derive events"];
+  "Backend" -> "Control Center" [label="WS push / REST history"];
+  "Control Center" -> "Operator" [label="live dashboard + events + alerts"];
+}

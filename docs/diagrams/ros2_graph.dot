@@ -1,0 +1,41 @@
+digraph RosGraph {
+  rankdir=LR;
+  node [shape=box, style=rounded, fontname="Helvetica", fontsize=10];
+  edge [fontname="Helvetica", fontsize=8, color="#5a6573"];
+
+  beacon [label="robot_status_publisher\n(per robot)"];
+  fleet [label="fleet_manager"];
+  tm [label="task_manager\n(per robot)"];
+  amcl [label="amcl\n(per robot)"];
+  planner [label="planner\n(per robot)"];
+  obstacle [label="obstacle_monitor\n(per robot)"];
+  analytics [label="analytics_node"];
+  cc [label="control_center"];
+  ingest [label="backend_ingest"];
+
+  beacon -> fleet [label="/robot_registration\n/robot_heartbeat\n/robot_pose\n/battery_status"];
+  beacon -> tm [label="/goal_pose (charging)"];
+  fleet -> tm [label="/task_assignment\n/cancel_task"];
+  tm -> fleet [label="/task_status (via beacon)"];
+  tm -> planner [label="/goal_pose"];
+  tm -> amcl [label="/amcl_pose"];
+  planner -> tm [label="/plan"];
+  amcl -> planner [label="/amcl_pose"];
+  obstacle -> amcl [label="/scan"];
+  obstacle -> fleet [label="/scan (via beacon)]"];
+
+  fleet -> analytics [label="/fleet_status\n/reservation_status"];
+  beacon -> analytics [label="/robot_pose"];
+  fleet -> cc [label="/fleet_status\n/fleet_monitor\n/reservation_status\n/recovery_event\n/dispatch_decision"];
+  analytics -> cc [label="/analytics"];
+  tm -> cc [label="/task_status (per robot)"];
+  amcl -> cc [label="/amcl_pose (per robot)"];
+  beacon -> cc [label="/battery_status"];
+
+  cc -> tm [label="/add_task\n/cancel_task (operator)"];
+  cc -> beacon [label="/battery_command\n/control (sim)"];
+  cc -> tm [label="/cmd_vel, /goal_pose (manual)"];
+  fleet -> ingest [label="global topics"];
+  cc -> ingest [label="global topics"];
+  ingest -> cc [label="task relay (/add_task)"];
+}

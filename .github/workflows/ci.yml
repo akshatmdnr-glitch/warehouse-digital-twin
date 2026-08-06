@@ -1,0 +1,88 @@
+# Warehouse Digital Twin CI
+#
+# Runs on every push / pull request:
+#   1. Code quality (black, isort, flake8, pylint, mypy)
+#   2. Backend unit + API tests (pytest with coverage)
+#   3. ROS workspace build + launch validation + fleet/planner unit tests
+#   4. Docker image builds (backend + ros)
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint:
+    name: Lint & format
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install tools
+        run: |
+          pip install black isort flake8 pylint mypy
+      - name: black
+        run: black --check backend/ ros2_ws/src/warehouse_bringup/warehouse_bringup/
+      - name: isort
+        run: isort --check-only backend/ ros2_ws/src/warehouse_bringup/warehouse_bringup/
+      - name: flake8
+        run: flake8 backend/backend/ ros2_ws/src/warehouse_bringup/warehouse_bringup/
+      - name: pylint
+        run: pylint --rcfile=pylintrc backend/backend/
+      - name: mypy
+        run: mypy --config-file pyproject.toml backend/backend/
+
+  backend-tests:
+    name: Backend tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: pip install -r backend/requirements.txt
+      - name: Run tests + coverage
+        run: |
+          cd backend
+          pytest tests/ --cov=backend --cov-report=term-missing --cov-report=xml
+      - uses: codecov/codecov-action@v4
+        with:
+          files: backend/coverage.xml
+          fail_ci_if_error: false
+
+  ros-tests:
+    name: ROS workspace build + tests
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        ros-distro: [jazzy]
+    container:
+      image: ros:${{ matrix.ros-distro }}-ros-base
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build tools
+        run: apt-get update && apt-get install -y python3-colcon-common-extensions python3-pytest
+      - name: Build workspace
+        run: |
+          cd ros2_ws
+          colcon build --symlink-install
+          source install/setup.bash
+          python3 -m pytest src/warehouse_bringup/test/ --cov=warehouse_bringup --cov-report=term-missing
+
+  docker:
+    name: Docker build
+    runs-on: ubuntu-24.04
+    needs: [lint, backend-tests, ros-tests]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build backend image
+        run: docker build -f docker/Dockerfile.backend -t warehouse-backend .
+      - name: Build ROS image
+        run: docker build -f docker/Dockerfile.ros -t warehouse-ros .
+      - name: Validate compose
+        run: docker compose config

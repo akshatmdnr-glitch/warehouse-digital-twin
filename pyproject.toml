@@ -1,0 +1,25 @@
+[tool.black]
+line-length = 88
+target-version = ['py312']
+
+[tool.isort]
+profile = 'black'
+line_length = 88
+known_first_party = ['backend']
+
+[tool.mypy]
+python_version = '3.12'
+ignore_missing_imports = true
+follow_imports = 'silent'
+check_untyped_defs = false
+
+[tool.pytest.ini_options]
+addopts = '-q'
+testpaths = ['backend/tests', 'ros2_ws/src/warehouse_bringup/test']
+
+[tool.coverage.run]
+source = ['backend', 'warehouse_bringup']
+omit = ['*/test/*', '*/tests/*']
+
+[tool.coverage.report]
+show_missing = true

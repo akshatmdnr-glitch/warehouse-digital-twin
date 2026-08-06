@@ -1,0 +1,199 @@
+<?xml version="1.0" ?>
+<!--
+  Warehouse World — Phase 2.2
+  Structural shell: 20m × 20m floor with four surrounding walls (4m height).
+  Robot spawn area near center (0, 0, 0.01).
+-->
+<sdf version="1.6">
+  <world name="warehouse_world">
+
+    <!-- ===== Physics ===== -->
+    <physics name="1ms" type="ignored">
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+    </physics>
+
+    <!-- ===== Required System Plugins ===== -->
+    <plugin
+      filename="gz-sim-physics-system"
+      name="gz::sim::systems::Physics">
+    </plugin>
+    <plugin
+      filename="gz-sim-user-commands-system"
+      name="gz::sim::systems::UserCommands">
+    </plugin>
+    <plugin
+      filename="gz-sim-scene-broadcaster-system"
+      name="gz::sim::systems::SceneBroadcaster">
+    </plugin>
+    <plugin
+      filename="gz-sim-contact-system"
+      name="gz::sim::systems::Contact">
+    </plugin>
+    <plugin
+      filename="gz-sim-sensors-system"
+      name="gz::sim::systems::Sensors">
+    </plugin>
+
+    <!-- ===== Lighting ===== -->
+    <light type="directional" name="sun">
+      <cast_shadows>true</cast_shadows>
+      <pose>0 0 10 0 0 0</pose>
+      <diffuse>0.8 0.8 0.8 1</diffuse>
+      <specular>0.2 0.2 0.2 1</specular>
+      <attenuation>
+        <range>1000</range>
+        <constant>0.9</constant>
+        <linear>0.01</linear>
+        <quadratic>0.001</quadratic>
+      </attenuation>
+      <direction>-0.5 0.1 -0.9</direction>
+    </light>
+
+    <!-- ===== Ground (collision fallback below floor) ===== -->
+    <model name="ground_plane">
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>100 100</size>
+            </plane>
+          </geometry>
+        </collision>
+      </link>
+    </model>
+
+    <!-- ===== Warehouse Floor (20m × 20m, visual only — collision via ground_plane) ===== -->
+    <model name="warehouse_floor">
+      <static>true</static>
+      <pose>0 0 0 0 0 0</pose>
+      <link name="link">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>20 20 0.01</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.6 0.6 0.6 1</ambient>
+            <diffuse>0.55 0.55 0.55 1</diffuse>
+            <specular>0.1 0.1 0.1 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- ===== North Wall (y = +10) ===== -->
+    <model name="north_wall">
+      <static>true</static>
+      <pose>0 10 2 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <box>
+              <size>20 0.15 4</size>
+            </box>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>20 0.15 4</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.7 0.65 0.55 1</ambient>
+            <diffuse>0.65 0.6 0.5 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- ===== South Wall (y = -10) ===== -->
+    <model name="south_wall">
+      <static>true</static>
+      <pose>0 -10 2 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <box>
+              <size>20 0.15 4</size>
+            </box>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>20 0.15 4</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.7 0.65 0.55 1</ambient>
+            <diffuse>0.65 0.6 0.5 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- ===== East Wall (x = +10) ===== -->
+    <model name="east_wall">
+      <static>true</static>
+      <pose>10 0 2 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <box>
+              <size>0.15 20 4</size>
+            </box>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.15 20 4</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.7 0.65 0.55 1</ambient>
+            <diffuse>0.65 0.6 0.5 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- ===== West Wall (x = -10) ===== -->
+    <model name="west_wall">
+      <static>true</static>
+      <pose>-10 0 2 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <box>
+              <size>0.15 20 4</size>
+            </box>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.15 20 4</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.7 0.65 0.55 1</ambient>
+            <diffuse>0.65 0.6 0.5 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Future: shelves, boxes, pallets, charging station, loading dock go here -->
+
+  </world>
+</sdf>

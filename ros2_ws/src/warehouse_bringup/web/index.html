@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Warehouse Control Center</title>
+  <link rel="stylesheet" href="styles.css?v=3">
+</head>
+<body>
+  <header id="topbar">
+    <div class="brand">
+      <span class="logo">◈</span>
+      <div>
+        <h1>Warehouse Control Center</h1>
+        <div class="sub">ROS 2 · Multi-robot Fleet Management</div>
+      </div>
+    </div>
+    <div id="top-status" class="status-pills"></div>
+    <div class="top-right">
+      <span id="clock" class="clock"></span>
+      <span id="conn" class="conn">connecting…</span>
+    </div>
+  </header>
+
+  <nav id="tabs">
+    <button data-tab="dashboard" class="tab active">Dashboard</button>
+    <button data-tab="map" class="tab">Map</button>
+    <button data-tab="robots" class="tab">Robots</button>
+    <button data-tab="tasks" class="tab">Tasks</button>
+    <button data-tab="fleet" class="tab">Fleet</button>
+    <button data-tab="events" class="tab">Events</button>
+    <button data-tab="alerts" class="tab">Alerts</button>
+    <button data-tab="monitoring" class="tab">Monitoring</button>
+    <button data-tab="settings" class="tab">Settings</button>
+  </nav>
+
+  <main id="view">
+    <section id="tab-dashboard" class="panel active"></section>
+    <section id="tab-map" class="panel">
+      <div class="map-toolbar">
+        <button class="btn" id="map-zoom-in">＋ Zoom in</button>
+        <button class="btn" id="map-zoom-out">－ Zoom out</button>
+        <button class="btn ok-btn" id="map-autocenter">◎ Auto-center</button>
+        <span class="hint" style="margin-left:8px">wheel: zoom · drag: pan · click a robot: select</span>
+      </div>
+      <canvas id="mapview" width="1100" height="560"></canvas>
+      <div class="map-legend">
+        <span><i style="background:#38bdf8"></i>robot1</span>
+        <span><i style="background:#a78bfa"></i>robot2</span>
+        <span><i style="background:#fbbf24"></i>charging</span>
+        <span><i style="background:#fb2576"></i>estop</span>
+        <span><i style="background:#6b7280"></i>offline</span>
+        <span><i style="background:#34d399"></i>charging station</span>
+        <span><i style="background:#fbbf24;border-radius:0"></i>goal</span>
+        <span><i style="background:#3a4654;border-radius:0"></i>obstacle</span>
+      </div>
+    </section>
+    <section id="tab-robots" class="panel"></section>
+    <section id="tab-tasks" class="panel"></section>
+    <section id="tab-fleet" class="panel"></section>
+    <section id="tab-events" class="panel"></section>
+    <section id="tab-alerts" class="panel"></section>
+    <section id="tab-monitoring" class="panel"></section>
+    <section id="tab-settings" class="panel"></section>
+  </main>
+
+  <div id="toast" class="toast"></div>
+
+  <script type="module" src="app.js?v=3"></script>
+</body>
+</html>

@@ -1,0 +1,32 @@
+[flake8]
+max-line-length = 88
+extend-ignore =
+    E203,
+    W503,
+    E501,
+    E402,
+    F401,
+    Q000,
+    D100,
+    D101,
+    D102,
+    D103,
+    D104,
+    D105,
+    D107,
+    D200,
+    D205,
+    D400,
+    D402,
+    A002,
+    A003,
+    I001,
+    I100,
+    I201
+exclude =
+    .git,
+    __pycache__,
+    build,
+    install,
+    log,
+    .venv

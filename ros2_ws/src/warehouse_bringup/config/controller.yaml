@@ -1,0 +1,7 @@
+/**:
+  ros__parameters:
+    linear_speed: 0.3
+    angular_speed: 0.8
+    goal_tolerance: 0.15
+    waypoint_tolerance: 0.1
+    lookahead_distance: 0.5

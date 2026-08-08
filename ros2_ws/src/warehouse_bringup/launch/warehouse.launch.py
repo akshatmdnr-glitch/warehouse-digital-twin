@@ -27,6 +27,7 @@ from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PythonExpression
+from launch_ros.actions import Node
 from ament_index_python.packages import get_package_share_directory
 
 
@@ -50,9 +51,10 @@ def generate_launch_description():
     spawn_yaw2 = LaunchConfiguration('spawn_yaw2')
     timeout = LaunchConfiguration('heartbeat_timeout')
     w_dist = LaunchConfiguration('score_w_distance')
-    w_load = LaunchConfiguration('score_w_workload')
-    w_prio = LaunchConfiguration('score_w_priority')
-    w_cap = LaunchConfiguration('score_w_capability')
+    w_queue = LaunchConfiguration('score_w_queue')
+    w_battery = LaunchConfiguration('score_w_battery')
+    w_current = LaunchConfiguration('score_w_current')
+    w_eta = LaunchConfiguration('score_w_eta')
     low_battery = LaunchConfiguration('low_battery_threshold')
     critical_battery = LaunchConfiguration('critical_battery_threshold')
     initial_battery = LaunchConfiguration('initial_battery')
@@ -77,49 +79,51 @@ def generate_launch_description():
     declare_args = [
         DeclareLaunchArgument('robot_count', default_value='2',
                               description='Number of robots to launch (1 or 2)'),
-        DeclareLaunchArgument('world', default_value='warehouse_empty.sdf',
+        DeclareLaunchArgument('world', default_value='warehouse.world.sdf',
                               description='World file to load from the worlds/ directory'),
-        DeclareLaunchArgument('map', default_value='warehouse_map.yaml',
+        DeclareLaunchArgument('map', default_value='warehouse_world.yaml',
                               description='Map YAML file to load from the maps/ directory'),
         DeclareLaunchArgument('x', default_value='0.0', description='Robot 1 goal X (m)'),
-        DeclareLaunchArgument('y', default_value='0.0', description='Robot 1 goal Y (m)'),
+        DeclareLaunchArgument('y', default_value='5.0', description='Robot 1 goal Y (m)'),
         DeclareLaunchArgument('yaw', default_value='0.0', description='Robot 1 goal yaw (rad)'),
         DeclareLaunchArgument('x2', default_value='0.0', description='Robot 2 goal X (m)'),
-        DeclareLaunchArgument('y2', default_value='0.0', description='Robot 2 goal Y (m)'),
+        DeclareLaunchArgument('y2', default_value='-5.0', description='Robot 2 goal Y (m)'),
         DeclareLaunchArgument('yaw2', default_value='0.0', description='Robot 2 goal yaw (rad)'),
         DeclareLaunchArgument('spawn_x', default_value='0.0', description='Robot 1 spawn X (m)'),
-        DeclareLaunchArgument('spawn_y', default_value='0.0', description='Robot 1 spawn Y (m)'),
-        DeclareLaunchArgument('spawn_yaw', default_value='0.0', description='Robot 1 spawn yaw (rad)'),
+        DeclareLaunchArgument('spawn_y', default_value='5.0', description='Robot 1 spawn Y (m)'),
+        DeclareLaunchArgument('spawn_yaw', default_value='-1.57', description='Robot 1 spawn yaw (rad)'),
         DeclareLaunchArgument('spawn_x2', default_value='0.0', description='Robot 2 spawn X (m)'),
-        DeclareLaunchArgument('spawn_y2', default_value='0.0', description='Robot 2 spawn Y (m)'),
-        DeclareLaunchArgument('spawn_yaw2', default_value='0.0', description='Robot 2 spawn yaw (rad)'),
+        DeclareLaunchArgument('spawn_y2', default_value='-5.0', description='Robot 2 spawn Y (m)'),
+        DeclareLaunchArgument('spawn_yaw2', default_value='1.57', description='Robot 2 spawn yaw (rad)'),
         DeclareLaunchArgument('heartbeat_timeout', default_value='3.0',
                               description='Fleet heartbeat timeout (s)'),
         DeclareLaunchArgument('score_w_distance', default_value='1.0',
                               description='Dispatch scoring weight for distance'),
-        DeclareLaunchArgument('score_w_workload', default_value='1.0',
-                              description='Dispatch scoring weight for workload'),
-        DeclareLaunchArgument('score_w_priority', default_value='1.0',
-                              description='Dispatch scoring weight for priority'),
-        DeclareLaunchArgument('score_w_capability', default_value='1.0',
-                              description='Dispatch scoring weight for capability'),
+        DeclareLaunchArgument('score_w_queue', default_value='1.0',
+                              description='Dispatch scoring weight per queued task'),
+        DeclareLaunchArgument('score_w_battery', default_value='1.0',
+                              description='Dispatch scoring weight for low battery'),
+        DeclareLaunchArgument('score_w_current', default_value='10.0',
+                              description='Dispatch penalty for a robot already executing'),
+        DeclareLaunchArgument('score_w_eta', default_value='1.0',
+                              description='Dispatch scoring weight for finish-time (ETA)'),
         DeclareLaunchArgument('low_battery_threshold', default_value='30.0',
                               description='Battery % below which a robot takes no new work'),
         DeclareLaunchArgument('critical_battery_threshold', default_value='15.0',
                               description='Battery % that forces a robot to charge'),
         DeclareLaunchArgument('initial_battery', default_value='100.0',
                               description='Starting battery % for every robot'),
-        DeclareLaunchArgument('discharge_rate', default_value='1.0',
+        DeclareLaunchArgument('discharge_rate', default_value='0.1',
                               description='Battery drain % per second while executing'),
         DeclareLaunchArgument('charge_rate', default_value='10.0',
                               description='Battery charge % per second'),
         DeclareLaunchArgument('charging_station_x', default_value='0.0',
                               description='Robot 1 charging station X (m)'),
-        DeclareLaunchArgument('charging_station_y', default_value='5.0',
+        DeclareLaunchArgument('charging_station_y', default_value='8.0',
                               description='Robot 1 charging station Y (m)'),
         DeclareLaunchArgument('charging_station_x2', default_value='0.0',
                               description='Robot 2 charging station X (m)'),
-        DeclareLaunchArgument('charging_station_y2', default_value='-5.0',
+        DeclareLaunchArgument('charging_station_y2', default_value='-8.0',
                               description='Robot 2 charging station Y (m)'),
         DeclareLaunchArgument('analytics_period', default_value='2.0',
                               description='Seconds between /analytics summaries'),
@@ -169,6 +173,8 @@ def generate_launch_description():
             'namespace': 'robot1',
             'robot_name': 'burger_1',
             'robot_id': 'robot1',
+            'model_variant': 'turtlebot3_burger',
+            'bridge_config': 'turtlebot3_burger_bridge.yaml',
             'map': map_file,
             'x': goal_x,
             'y': goal_y,
@@ -191,6 +197,8 @@ def generate_launch_description():
             'namespace': 'robot2',
             'robot_name': 'burger_2',
             'robot_id': 'robot2',
+            'model_variant': 'turtlebot3_burger2',
+            'bridge_config': 'turtlebot3_burger2_bridge.yaml',
             'map': map_file,
             'x': goal_x2,
             'y': goal_y2,
@@ -204,12 +212,6 @@ def generate_launch_description():
             'charging_station_x': station_x2,
             'charging_station_y': station_y2,
         }.items(),
-        condition=IfCondition(is_multi),
-    )
-
-    # Shared RViz (multi-robot mode only; single mode gets it via simulation)
-    rviz_launch = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource([pkg_dir, '/launch/rviz.launch.py']),
         condition=IfCondition(is_multi),
     )
 
@@ -234,6 +236,27 @@ def generate_launch_description():
         }.items(),
     )
 
+    # Phase 3/4: one physical yellow cube carried by robot1 (no visual helpers)
+    cube_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource([pkg_dir, '/launch/cube_carrier.launch.py']),
+        condition=IfCondition(is_multi),
+    )
+
+    # Simulated localization: publishes each robot's ACTUAL Gazebo model pose
+    # as /ns/amcl_pose (read from /world/.../pose/info). This is the ONE
+    # source of truth — no odometry integration, so it can never drift from
+    # the physical robot model.
+    sim_localization_node = Node(
+        package='warehouse_bringup',
+        executable='sim_localization_node',
+        name='sim_localization',
+        output='screen',
+        parameters=[{
+            'world': 'warehouse_world',
+            'model_names': '{"robot1": "burger_1", "robot2": "burger_2"}',
+        }],
+    )
+
     # ROS -> Backend ingest bridge (enabled when backend_url is set)
     enable_ingest = PythonExpression(
         ["'", backend_url, "' != '' and 'true' or 'false'"])
@@ -253,15 +276,17 @@ def generate_launch_description():
             'low_battery_threshold': low_battery,
             'critical_battery_threshold': critical_battery,
             'score_w_distance': w_dist,
-            'score_w_workload': w_load,
-            'score_w_priority': w_prio,
-            'score_w_capability': w_cap,
+            'score_w_queue': w_queue,
+            'score_w_battery': w_battery,
+            'score_w_current': w_current,
+            'score_w_eta': w_eta,
         }.items(),
     )
 
     return LaunchDescription(
         declare_args
-        + [sim_launch, nav_single, gz_launch, robot1, robot2, rviz_launch,
+        + [sim_launch, nav_single, gz_launch, robot1, robot2,
            analytics_launch, dashboard_launch, control_center_launch,
-           backend_ingest_launch, fleet_launch]
+           sim_localization_node, cube_launch, backend_ingest_launch,
+           fleet_launch]
     )

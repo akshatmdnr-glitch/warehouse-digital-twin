@@ -104,7 +104,9 @@ class DashboardNode(Node):
         # Downsample so the /api/state payload stays small.
         width, height = msg.info.width, msg.info.height
         step = max(1, (width * height) // (_MAP_MAX * _MAP_MAX))
-        data = msg.data[::step]
+        # msg.data is an array.array('b') — convert to a plain list so the
+        # JSON snapshot serializes cleanly.
+        data = list(msg.data[::step])
         self._map = {
             "width": width,
             "height": height,
@@ -130,6 +132,8 @@ class DashboardNode(Node):
                 "yaw": r.get("yaw"),
                 "battery": r.get("battery"),
                 "charging": bool(r.get("charging", False)),
+                "exec_state": r.get("exec_state", "") or "UNKNOWN",
+                "moving": bool(r.get("moving", False)),
                 "current_task": r.get("current_task", ""),
             }
             # Merge per-robot analytics if available.
@@ -309,10 +313,11 @@ async function refresh(){
   // Robots
   const rt = $('robots'); rt.innerHTML='';
   rt.appendChild(el('tr')).append(
-    ...['Robot','NS','Status','Task','Battery','X','Y','Yaw'].map(h=>{const th=el('th');th.textContent=h;return th;}));
+    ...['Robot','NS','Status','Exec','Task','Battery','X','Y','Yaw'].map(h=>{const th=el('th');th.textContent=h;return th;}));
   for(const r of state.robots){
     const tr=el('tr');
-    [r.id, r.namespace, r.status, r.current_task||'—',
+    [r.id, r.namespace, r.status, r.exec_state,
+     r.current_task||'—',
      (r.battery===null?'—':r.battery+'%'), r.x===null?'—':r.x.toFixed(2),
      r.y===null?'—':r.y.toFixed(2), r.yaw===null?'—':(r.yaw*180/Math.PI).toFixed(0)+'°']
       .forEach(t=>{const td=el('td');td.textContent=t;tr.appendChild(td);});
@@ -358,7 +363,7 @@ function drawMap(){
   for(const r of state.robots){
     if(r.x===null||r.y===null) continue;
     const px=(r.x-ox)/res*s, py=(r.y-oy)/res*s;
-    cx.fillStyle = r.charging?'#ff9800':(r.status==='OFFLINE'?'#555':(r.current_task?'#4caf50':'#2196f3'));
+    cx.fillStyle = r.charging?'#ff9800':(r.status==='OFFLINE'?'#555':(r.moving?'#4caf50':(r.current_task?'#8bc34a':'#2196f3')));
     cx.beginPath(); cx.arc(px, y0+py, 8, 0, 2*Math.PI); cx.fill();
     cx.strokeStyle='#fff';
     const ang=r.yaw||0;

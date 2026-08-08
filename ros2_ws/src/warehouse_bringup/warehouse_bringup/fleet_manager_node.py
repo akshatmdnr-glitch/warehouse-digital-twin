@@ -13,7 +13,8 @@ Publishes:  /fleet_status (std_msgs/String, transient-local)
 
 Registration format (CSV): robot_id,status,current_task
                            [,payload_capacity[,max_speed[,robot_type
-                           [,workload[,priority[,battery[,charging]]]]]]]
+                           [,workload[,priority[,battery[,charging[,namespace
+                           [,exec_state[,moving]]]]]]]]]]
   status:           ONLINE or OFFLINE (case-insensitive)
   current_task:     active task id, or empty
   payload_capacity: kg (float, default 0.0)
@@ -22,7 +23,10 @@ Registration format (CSV): robot_id,status,current_task
   workload:         queued-task count (int, default 0)
   priority:         dispatch priority, higher = preferred (float, default 0.0)
   battery:          battery percentage 0-100 (float, default 100.0)
-  charging:         1 if charging else 0 (int, default 0)
+  charging:         1 if physically charging else 0 (int, default 0)
+  namespace:        ROS namespace (str, default '')
+  exec_state:       authoritative execution state (str, default '')
+  moving:           1 if driving (path+velocity+pose change) else 0
 
 Battery-aware scheduling: robots below low_battery_threshold (or currently
 charging) are never selected for new work. If a robot's battery reaches
@@ -45,13 +49,23 @@ Task format (CSV): task_id,pickup_x,pickup_y,dropoff_x,dropoff_y
 Assignment format (CSV): robot_id,task_id,pickup_x,pickup_y,
                          dropoff_x,dropoff_y,priority,required_payload
 
-Assignment policy: only ONLINE, IDLE robots whose payload_capacity >=
-required_payload are eligible. Each eligible robot is scored with a weighted
-sum of normalized factors — distance to pickup, current workload, robot
-priority, and capability match (surplus capacity) — and the lowest score
-wins (ties broken by robot_id). Weights are configurable:
-score_w_distance, score_w_workload, score_w_priority, score_w_capability.
-If none qualify, an assignment is published with robot_id='NONE'.
+Assignment policy: EVERY eligible robot (ONLINE, not charging, battery above
+the low threshold, payload_capacity >= required_payload) is scored for each
+new task. Idle robots are always preferred over busy ones (a task is never
+assigned to a robot already executing another task while an idle robot
+exists). Among idle robots the score = distance_to_pickup + queue_penalty +
+battery_penalty; busy robots (only chosen when nobody is idle) additionally
+pay a current-task penalty plus an ETA penalty so the robot that will finish
+first wins. The lowest score wins (ties broken by robot_id). Weights:
+score_w_distance, score_w_queue, score_w_battery, score_w_current, score_w_eta.
+
+Each robot owns its own task queue. A task is committed to a robot's queue
+immediately but only dispatched (handed to the robot's task manager) once that
+robot is idle and its route is free. When a robot finishes, the scheduler is
+notified immediately: it assigns the highest-priority waiting task and
+rebalances by moving the highest-priority queued (not-started) task from a
+busy robot to the now-idle robot. Only tasks already in execution are
+non-transferable.
 
 Reservations (multi-robot coordination): each route is divided into
 configurable segments (segment_size cells each). A robot reserves only a
@@ -97,9 +111,10 @@ class FleetManagerNode(Node):
         self.declare_parameter("cell_size", 1.0)
         self.declare_parameter("reservation_buffer", 0)
         self.declare_parameter("score_w_distance", 1.0)
-        self.declare_parameter("score_w_workload", 1.0)
-        self.declare_parameter("score_w_priority", 1.0)
-        self.declare_parameter("score_w_capability", 1.0)
+        self.declare_parameter("score_w_queue", 1.0)
+        self.declare_parameter("score_w_battery", 1.0)
+        self.declare_parameter("score_w_current", 10.0)
+        self.declare_parameter("score_w_eta", 1.0)
         self.declare_parameter("low_battery_threshold", 30.0)
         self.declare_parameter("critical_battery_threshold", 15.0)
         self.declare_parameter("segment_size", 2)
@@ -110,21 +125,29 @@ class FleetManagerNode(Node):
         self._cell_size = self.get_parameter("cell_size").value
         self._reservation_buffer = int(self.get_parameter("reservation_buffer").value)
         self._w_distance = self.get_parameter("score_w_distance").value
-        self._w_workload = self.get_parameter("score_w_workload").value
-        self._w_priority = self.get_parameter("score_w_priority").value
-        self._w_capability = self.get_parameter("score_w_capability").value
+        self._w_queue = self.get_parameter("score_w_queue").value
+        self._w_battery = self.get_parameter("score_w_battery").value
+        self._w_current = self.get_parameter("score_w_current").value
+        self._w_eta = self.get_parameter("score_w_eta").value
         self._low_battery = self.get_parameter("low_battery_threshold").value
         self._critical_battery = self.get_parameter("critical_battery_threshold").value
         self._segment_size = max(1, int(self.get_parameter("segment_size").value))
         self._lookahead = max(0, int(self.get_parameter("traffic_lookahead").value))
         self._robots = {}  # robot_id -> registry entry
 
+        # ── Per-robot task queues (multi-robot dispatch) ──
+        # Every robot owns its own queue of committed tasks. A task lives here
+        # until it is actually handed to that robot's task manager (dispatch).
+        # Queued-but-not-started tasks are transferable during rebalancing.
+        self._robot_queues = {}  # robot_id -> [task, ...] (committed, queued)
+        self._waiting_tasks = []  # tasks with no eligible robot yet
+        self._task_seq = 0  # global FIFO counter for deterministic ordering
+
         # Reservation state (multi-robot coordination)
         self._reservations = (
             {}
         )  # robot_id -> {task_id, task, cells:set, activated:bool}
         self._cell_owners = {}  # (cx,cy) -> robot_id
-        self._pending_dispatches = []  # queued tasks waiting for a free route
         self._retry_tasks = []  # recovered tasks waiting for an eligible robot
 
         # Monitoring counters
@@ -180,6 +203,9 @@ class FleetManagerNode(Node):
             priority = float(parts[7]) if len(parts) >= 8 else 0.0
             battery = float(parts[8]) if len(parts) >= 9 else 100.0
             charging = int(parts[9]) if len(parts) >= 10 else 0
+            namespace = parts[10].strip() if len(parts) >= 11 else ""
+            exec_state = parts[11].strip() if len(parts) >= 12 else ""
+            moving = bool(int(parts[12])) if len(parts) >= 13 else False
             if status not in VALID_STATUSES:
                 self.get_logger().warn(
                     f'Unknown status "{parts[1]}" for {robot_id}, ignoring'
@@ -214,7 +240,9 @@ class FleetManagerNode(Node):
                 "priority": priority,
                 "battery": battery,
                 "charging": bool(charging),
-                "namespace": parts[10].strip() if len(parts) >= 11 else "",
+                "namespace": namespace,
+                "exec_state": exec_state,
+                "moving": moving,
                 "x": None,
                 "y": None,
                 "yaw": None,
@@ -235,8 +263,10 @@ class FleetManagerNode(Node):
             entry["priority"] = priority
             entry["battery"] = battery
             entry["charging"] = bool(charging)
-            if len(parts) >= 11:
-                entry["namespace"] = parts[10].strip()
+            entry["exec_state"] = exec_state
+            entry["moving"] = moving
+            if namespace:
+                entry["namespace"] = namespace
             entry["last_seen"] = now
 
         self._publish_fleet()  # immediate refresh
@@ -281,6 +311,9 @@ class FleetManagerNode(Node):
             self._tasks_completed += 1  # normal completion
             self._release_reservations(robot_id)
             self._publish_reservations()
+            # The robot just went idle: immediately notify the scheduler so it
+            # picks up its next queued task, or pulls work from another robot.
+            self._rebalance()
 
     def _heartbeat_callback(self, msg):
         robot_id = msg.data.strip()
@@ -327,22 +360,10 @@ class FleetManagerNode(Node):
             recovered.append(res["task"])
             self._release_reservations(robot_id)
 
-        # 2. Pending dispatches committed to this robot — return to the queue.
-        kept = []
-        for entry in self._pending_dispatches:
-            if entry["robot_id"] == robot_id:
-                recovered.append(
-                    {
-                        "task_id": entry["task_id"],
-                        "pickup": entry["pickup"],
-                        "dropoff": entry["dropoff"],
-                        "priority": entry["priority"],
-                        "required_payload": entry["required_payload"],
-                    }
-                )
-            else:
-                kept.append(entry)
-        self._pending_dispatches = kept
+        # 2. Queued (not-started) tasks committed to this robot — return them
+        #    to the waiting pool so another robot picks them up.
+        queued = self._robot_queues.pop(robot_id, [])
+        recovered.extend(queued)
 
         # 3. Clean the robot's commitment so it can never be re-selected.
         rob = self._robots.get(robot_id)
@@ -377,9 +398,9 @@ class FleetManagerNode(Node):
                 f"Task {task_id}: already queued/reserved, skipping recovery"
             )
             return
-        result = self._attempt_dispatch(task)
+        result = self._schedule_task(task)
         if result == "no_robot":
-            self._retry_tasks.append(task)
+            self._waiting_tasks.append(task)
             self._publish_recovery_event(
                 {
                     "event": "task_recovered",
@@ -387,7 +408,7 @@ class FleetManagerNode(Node):
                     "reason": "waiting_for_robot",
                 }
             )
-        elif result == "dispatched":
+        else:
             self._publish_recovery_event(
                 {
                     "event": "task_recovered",
@@ -395,16 +416,17 @@ class FleetManagerNode(Node):
                     "reason": "redispatched",
                 }
             )
-        # 'queued' -> now in _pending_dispatches for the new robot
 
     def _process_retry_tasks(self):
         """Dispatch recovered tasks as soon as an eligible robot appears."""
+        if not self._retry_tasks:
+            return
         remaining = []
         for task in self._retry_tasks:
-            result = self._attempt_dispatch(task)
+            result = self._schedule_task(task)
             if result == "no_robot":
                 remaining.append(task)
-            elif result == "dispatched":
+            else:
                 self._publish_recovery_event(
                     {
                         "event": "task_recovered",
@@ -412,7 +434,7 @@ class FleetManagerNode(Node):
                         "reason": "redispatched",
                     }
                 )
-            # 'queued' -> moved into _pending_dispatches, drop from retry
+            # 'assigned' -> moved into the robot's per-robot queue
         self._retry_tasks = remaining
 
     def _control_loop(self):
@@ -422,9 +444,10 @@ class FleetManagerNode(Node):
         self._cell_size = self.get_parameter("cell_size").value
         self._reservation_buffer = int(self.get_parameter("reservation_buffer").value)
         self._w_distance = self.get_parameter("score_w_distance").value
-        self._w_workload = self.get_parameter("score_w_workload").value
-        self._w_priority = self.get_parameter("score_w_priority").value
-        self._w_capability = self.get_parameter("score_w_capability").value
+        self._w_queue = self.get_parameter("score_w_queue").value
+        self._w_battery = self.get_parameter("score_w_battery").value
+        self._w_current = self.get_parameter("score_w_current").value
+        self._w_eta = self.get_parameter("score_w_eta").value
         self._low_battery = self.get_parameter("low_battery_threshold").value
         self._critical_battery = self.get_parameter("critical_battery_threshold").value
         self._segment_size = max(1, int(self.get_parameter("segment_size").value))
@@ -433,17 +456,22 @@ class FleetManagerNode(Node):
         self._check_battery()
         self._check_traffic()
         self._process_retry_tasks()
-        self._process_pending_dispatches()
+        self._process_pending_dispatches()  # -> _rebalance()
         self._publish_reservations()
         self._publish_fleet()
 
     def _check_battery(self):
-        """Release work and mark charging for robots that need to charge.
+        """Release work for robots that need to charge.
 
-        A robot needs to charge when it reports `charging` (its beacon reached
-        its critical threshold) or its battery is at/below the fleet critical
-        threshold. Either signal safely releases its active task so another
-        eligible robot can pick it up.
+        A robot needs to charge when it reports `charging` (its beacon is
+        physically docked on a pad) or its battery is at/below the fleet
+        critical threshold. Either signal safely releases its active task so
+        another eligible robot can pick it up.
+
+        The `charging` flag itself is NEVER set here — it is owned by the
+        robot's beacon, which reports it ONLY while the measured pose is inside
+        the charging pad bounds. The fleet keeps low-battery robots out of new
+        dispatch via the battery eligibility check in _select_robot.
         """
         for robot_id, entry in self._robots.items():
             needs_charge = (
@@ -457,21 +485,10 @@ class FleetManagerNode(Node):
             if res is not None:
                 released.append(res["task"])
                 self._release_reservations(robot_id)
-            kept = []
-            for p in self._pending_dispatches:
-                if p["robot_id"] == robot_id:
-                    released.append(
-                        {
-                            "task_id": p["task_id"],
-                            "pickup": p["pickup"],
-                            "dropoff": p["dropoff"],
-                            "priority": p["priority"],
-                            "required_payload": p["required_payload"],
-                        }
-                    )
-                else:
-                    kept.append(p)
-            self._pending_dispatches = kept
+            # Queued (not-started) tasks committed to this robot return to the
+            # waiting pool so another robot picks them up.
+            queued = self._robot_queues.pop(robot_id, [])
+            released.extend(queued)
             if released:
                 entry["current_task"] = ""
                 self.get_logger().warn(
@@ -491,7 +508,6 @@ class FleetManagerNode(Node):
                     self._publish_cancel(robot_id, t["task_id"])
                 for t in released:
                     self._requeue_task(t)
-            entry["charging"] = True
             self._publish_reservations()
 
     def _task_callback(self, msg):
@@ -528,11 +544,11 @@ class FleetManagerNode(Node):
 
         self._tasks_submitted += 1
 
-        result = self._attempt_dispatch(task)
+        result = self._schedule_task(task)
         if result == "no_robot":
             self.get_logger().warn(
-                f"Task {task_id}: no eligible robot "
-                f"(required_payload={required_payload})"
+                f"Task {task_id}: no eligible robot yet "
+                f"(required_payload={required_payload}) — waiting"
             )
             self._publish_assignment(
                 "NONE", task_id, pickup, dropoff, priority, required_payload
@@ -541,73 +557,277 @@ class FleetManagerNode(Node):
         self._publish_fleet()  # busy marking reflected immediately
         self._publish_reservations()
 
-    # ── Reservation coordination ───────────────────────────────
+    # ── Multi-robot dispatcher ─────────────────────────────────
 
-    def _attempt_dispatch(self, task, robot_id=None):
-        """Dispatch task to robot_id (or the best eligible robot)."""
+    def _eligible(self, robot):
+        """A robot that can take new work right now."""
+        return (
+            robot["status"] == "ONLINE"
+            and not robot.get("charging", False)
+            and robot.get("battery", 100.0) >= self._low_battery
+        )
+
+    def _busy(self, robot):
+        return bool(robot.get("current_task"))
+
+    def _estimate_eta(self, robot):
+        """Seconds until a robot frees up, including its queued (not-started)
+        work. 0 if the robot is idle. Used for the 'will finish first' rule —
+        a robot with queued tasks is not free after its current task."""
+        rid = robot["robot_id"]
+        if not self._busy(robot):
+            return 0.0
+        speed = max(float(robot.get("max_speed", 0.0)) or 0.22, 0.05)
+        total = 0.0
+        res = self._reservations.get(rid)
+        if res is not None:
+            n = len(res["segments"])
+            remaining = n - max(0, res["segment_index"])
+            total += remaining * self._segment_size * self._cell_size / speed
+        # Queued tasks still need to be executed before the robot is free.
+        for task in self._robot_queues.get(rid, []):
+            d = math.hypot(
+                task["dropoff"][0] - task["pickup"][0],
+                task["dropoff"][1] - task["pickup"][1],
+            )
+            total += d / speed
+        return max(0.0, total)
+
+    def _schedule_task(self, task):
+        """Assign a task to the best robot's queue, or the waiting pool.
+
+        Returns 'assigned', 'no_robot' or 'queued'. The task is committed to a
+        robot's per-robot queue; it is only actually dispatched (handed to the
+        robot's task manager) once that robot is idle and its route is free.
+        """
         task_id = task["task_id"]
-        if robot_id is None:
-            robot, scored = self._select_robot(task["required_payload"], task["pickup"])
-            self._publish_dispatch_decision(task, robot, scored)
-            if robot is None:
-                return "no_robot"
-            robot_id = robot["robot_id"]
-        else:
-            robot = self._robots.get(robot_id)
-            if robot is None or robot["status"] != "ONLINE":
-                return "no_robot"
-        robot["current_task"] = task_id  # optimistic busy — prevents re-assignment
+        self._task_seq += 1
+        task["_seq"] = self._task_seq
 
+        eligible = [
+            r for r in self._robots.values()
+            if self._eligible(r) and r["payload_capacity"] >= task["required_payload"]
+        ]
+        if not eligible:
+            self._waiting_tasks.append(task)
+            return "no_robot"
+
+        best, scored = self._select_robot(task, eligible)
+        self._publish_dispatch_decision(task, best, scored)
+        robot_id = best["robot_id"]
+        self._robot_queues.setdefault(robot_id, []).append(task)
+        self.get_logger().info(
+            f"Task {task_id}: committed to {robot_id} "
+            f"(queue {len(self._robot_queues[robot_id])}, busy={self._busy(best)})"
+        )
+        self._dispatch_next(robot_id)
+        return "assigned"
+
+    def _select_robot(self, task, eligible=None):
+        """Pick the best robot for a task.
+
+        Priority order (hard), matching the operator-facing rules:
+          1. Idle robot — a task is never assigned to a robot already executing
+             another task while an idle eligible robot exists;
+          2. robot that will finish first (lowest ETA);
+          3. robot with the smallest queue;
+          4. robot nearest to the pickup;
+          5. robot with the highest battery.
+
+        Candidates are ordered by that lexicographic key. The weighted
+        score (distance + queue + battery + current-task penalty) is still
+        computed and used to break exact ties deterministically.
+        """
+        if eligible is None:
+            eligible = [
+                r for r in self._robots.values()
+                if self._eligible(r)
+                and r["payload_capacity"] >= task["required_payload"]
+            ]
+        if not eligible:
+            return None, []
+
+        def _key(robot):
+            return (
+                0 if not self._busy(robot) else 1,   # 1. idle first
+                round(self._estimate_eta(robot), 3),  # 2. finish first
+                len(self._robot_queues.get(robot["robot_id"], [])),  # 3. queue
+                self._robot_distance(robot, task["pickup"]) or 999.0,  # 4. nearest
+                -float(robot.get("battery", 100.0)),  # 5. highest battery
+            )
+
+        ordered = sorted(eligible, key=_key)
+        best = ordered[0]
+        scored = [
+            {
+                "robot": r,
+                "score": round(self._score_robot(r, task), 3),
+            }
+            for r in ordered
+        ]
+        return best, scored
+
+    def _score_robot(self, robot, task):
+        """Lower is better:
+        distance_to_pickup + queue_penalty + battery_penalty
+        + current_task_penalty (+ ETA penalty for busy robots)."""
+        dist = self._robot_distance(robot, task["pickup"])
+        dist = dist if dist is not None else 20.0  # unknown pose -> worst case
+        queue_len = len(self._robot_queues.get(robot["robot_id"], []))
+        battery = float(robot.get("battery", 100.0))
+        busy = 1 if self._busy(robot) else 0
+        eta = self._estimate_eta(robot)
+        return (
+            self._w_distance * dist
+            + self._w_queue * queue_len
+            + self._w_battery * (100.0 - battery)
+            + self._w_current * busy
+            + self._w_eta * eta
+        )
+
+    def _dispatch_next(self, robot_id):
+        """Hand the next queued task to robot_id if it is idle and the route
+        is free. Returns True if a task was dispatched."""
+        robot = self._robots.get(robot_id)
+        queue = self._robot_queues.get(robot_id, [])
+        if robot is None or self._busy(robot):
+            return False
+        if not self._eligible(robot):
+            return False
+        while queue:
+            # Highest priority first (larger priority value), then FIFO.
+            task = max(queue, key=lambda t: (t["priority"], -t["_seq"]))
+            if self._try_dispatch(robot, task):
+                queue.remove(task)
+                return True
+            # Route blocked — leave it queued and retry on a later tick.
+            return False
+        return False
+
+    def _try_dispatch(self, robot, task):
+        """Reserve the route and publish the assignment for a queued task."""
+        robot_id = robot["robot_id"]
+        task_id = task["task_id"]
         route_ordered = self._route_cells_ordered(task["pickup"], task["dropoff"])
         segments = self._partition_segments(route_ordered)
         route_dir = (
             task["dropoff"][0] - task["pickup"][0],
             task["dropoff"][1] - task["pickup"][1],
         )
-        route_set = set(route_ordered)
 
-        # Head-on conflicts are serialized at dispatch so opposing robots can
-        # never meet mid-corridor (prevents head-on deadlocks).
-        if self._has_head_on_conflict(route_set, route_dir):
-            self._queue_pending(robot_id, task, route_ordered, segments, route_dir)
-            self.get_logger().warn(
-                f"Task {task_id}: head-on corridor conflict, queued for {robot_id}"
+        # Only the sliding window the robot will reserve right now must be free.
+        # The whole future route is NOT pre-emptively blocked, so a second robot
+        # can start on a shared corridor and follow at a safe distance instead
+        # of idling until the first robot finishes its entire route.
+        window_cells = set()
+        for i in range(0, min(self._lookahead + 1, len(segments))):
+            window_cells.update(segments[i])
+
+        if self._has_conflict(robot_id, window_cells):
+            self.get_logger().info(
+                f"Task {task_id}: route window blocked, queued for {robot_id} "
+                f"(waiting for reservation)"
             )
-            return "queued"
-
-        if not self._has_conflict(robot_id, route_set) and self._reserve(
-            robot_id, task, route_ordered, segments, route_dir
-        ):
-            self._dispatch(
-                robot_id,
-                task_id,
-                task["pickup"],
-                task["dropoff"],
-                task["priority"],
-                task["required_payload"],
-            )
-            return "dispatched"
-        self._queue_pending(robot_id, task, route_ordered, segments, route_dir)
-        self.get_logger().info(
-            f"Task {task_id}: route conflict, queued for {robot_id} "
-            f"(waiting for reservation)"
+            return False
+        if not self._reserve(robot_id, task, route_ordered, segments, route_dir):
+            return False
+        robot["current_task"] = task_id  # now executing — blocks re-assignment
+        self._dispatch(
+            robot_id,
+            task_id,
+            task["pickup"],
+            task["dropoff"],
+            task["priority"],
+            task["required_payload"],
         )
-        return "queued"
+        return True
 
-    def _queue_pending(self, robot_id, task, route_ordered, segments, route_dir):
-        self._pending_dispatches.append(
-            {
-                "robot_id": robot_id,
-                "task_id": task["task_id"],
-                "pickup": task["pickup"],
-                "dropoff": task["dropoff"],
-                "priority": task["priority"],
-                "required_payload": task["required_payload"],
-                "route_ordered": route_ordered,
-                "segments": segments,
-                "route_dir": route_dir,
-            }
-        )
+    # ── Dynamic rebalancing ────────────────────────────────────
+
+    def _rebalance(self):
+        """Keep every available robot busy.
+
+        * dispatch each idle robot's next queued task;
+        * pull tasks out of the waiting pool as soon as an eligible robot exists;
+        * move the highest-priority queued (not-started) task from a busy robot
+          to an idle robot so work stays balanced.
+        """
+        progress = True
+        while progress:
+            progress = False
+
+            # 1. Dispatch queued work for every idle robot.
+            for rid in list(self._robot_queues):
+                if self._dispatch_next(rid):
+                    progress = True
+
+            # 2. Assign waiting tasks to the best available robot.
+            if self._waiting_tasks:
+                remaining = []
+                for task in self._waiting_tasks:
+                    eligible = [
+                        r for r in self._robots.values()
+                        if self._eligible(r)
+                        and r["payload_capacity"] >= task["required_payload"]
+                    ]
+                    if not eligible:
+                        remaining.append(task)
+                        continue
+                    best, _ = self._select_robot(task, eligible)
+                    self._robot_queues.setdefault(best["robot_id"], []).append(task)
+                    self._dispatch_next(best["robot_id"])
+                    progress = True
+                self._waiting_tasks = remaining
+
+            # 3. Steal the highest-priority queued task from a busy robot for
+            #    any idle robot with an empty queue.
+            for rid, robot in self._robots.items():
+                if not self._eligible(robot) or self._busy(robot):
+                    continue
+                if self._robot_queues.get(rid):
+                    continue  # this robot already has work lined up
+                donor = self._pick_donor(rid, robot)
+                if donor is None:
+                    continue
+                task = self._pop_best_task(donor)
+                self._robot_queues.setdefault(rid, []).append(task)
+                self.get_logger().info(
+                    f"Task {task['task_id']}: rebalanced {donor} → {rid}"
+                )
+                self._dispatch_next(rid)
+                progress = True
+                break  # re-evaluate idle/steal conditions next pass
+
+        if progress or self._waiting_tasks:
+            self._publish_reservations()
+
+    def _pick_donor(self, rid, robot):
+        """Choose the robot with the most queued work to steal from. Only
+        non-starting (queued) tasks are eligible — a task already in execution
+        is never transferred."""
+        best_donor = None
+        best_score = -1
+        for donor_id, queue in self._robot_queues.items():
+            if donor_id == rid or not queue:
+                continue
+            donor_robot = self._robots.get(donor_id)
+            if donor_robot is None or not self._busy(donor_robot):
+                continue  # only steal from robots actually executing something
+            if donor_robot["payload_capacity"] < queue[0]["required_payload"]:
+                continue
+            # Prefer the donor with the most queued tasks.
+            if len(queue) > best_score:
+                best_score = len(queue)
+                best_donor = donor_id
+        return best_donor
+
+    def _pop_best_task(self, robot_id):
+        queue = self._robot_queues[robot_id]
+        task = max(queue, key=lambda t: (t["priority"], -t["_seq"]))
+        queue.remove(task)
+        if not queue:
+            del self._robot_queues[robot_id]
+        return task
 
     def _route_cells_ordered(self, pickup, dropoff):
         """Deterministically rasterize pickup->dropoff into an ordered cell list."""
@@ -784,8 +1004,11 @@ class FleetManagerNode(Node):
             self._publish_reservations()
 
     def _task_exists(self, task_id):
-        for entry in self._pending_dispatches:
-            if entry["task_id"] == task_id:
+        for queue in self._robot_queues.values():
+            if any(t["task_id"] == task_id for t in queue):
+                return True
+        for task in self._waiting_tasks:
+            if task["task_id"] == task_id:
                 return True
         for res in self._reservations.values():
             if res["task_id"] == task_id:
@@ -796,67 +1019,9 @@ class FleetManagerNode(Node):
         return False
 
     def _process_pending_dispatches(self):
-        """Dispatch queued tasks in FIFO order as soon as their route is free."""
-        remaining = []
-        for entry in self._pending_dispatches:
-            robot_id = entry["robot_id"]
-            rob = self._robots.get(robot_id)
-            # The robot is committed to this task; it must still be ONLINE.
-            if rob is None or rob["status"] != "ONLINE":
-                # Safety net: the committed robot vanished — return the task
-                # to the queue so another robot can pick it up.
-                self._retry_tasks.append(
-                    {
-                        "task_id": entry["task_id"],
-                        "pickup": entry["pickup"],
-                        "dropoff": entry["dropoff"],
-                        "priority": entry["priority"],
-                        "required_payload": entry["required_payload"],
-                    }
-                )
-                self.get_logger().warn(
-                    f'Task {entry["task_id"]}: robot {robot_id} unavailable, '
-                    f"re-queued for another robot"
-                )
-                continue
-            route_set = set(entry["route_ordered"])
-            # Head-on routes stay queued until the opposing robot is done.
-            if self._has_head_on_conflict(route_set, entry["route_dir"]):
-                remaining.append(entry)
-                continue
-            if self._has_conflict(robot_id, route_set):
-                remaining.append(entry)
-                continue
-            task = {
-                "task_id": entry["task_id"],
-                "pickup": entry["pickup"],
-                "dropoff": entry["dropoff"],
-                "priority": entry["priority"],
-                "required_payload": entry["required_payload"],
-            }
-            if not self._reserve(
-                robot_id,
-                task,
-                entry["route_ordered"],
-                entry["segments"],
-                entry["route_dir"],
-            ):
-                remaining.append(entry)
-                continue
-            self._dispatch(
-                robot_id,
-                entry["task_id"],
-                entry["pickup"],
-                entry["dropoff"],
-                entry["priority"],
-                entry["required_payload"],
-            )
-            self.get_logger().info(
-                f'Task {entry["task_id"]}: reservation cleared, '
-                f"dispatched to {robot_id}"
-            )
-            self._publish_reservations()
-        self._pending_dispatches = remaining
+        """Legacy hook — route-conflict dispatch is handled by _rebalance(),
+        which re-tries queued routes every control tick."""
+        self._rebalance()
 
     def _dispatch(self, robot_id, task_id, pickup, dropoff, priority, required_payload):
         self._publish_assignment(
@@ -887,10 +1052,16 @@ class FleetManagerNode(Node):
         data = {
             "reservation_count": len(res_list),
             "pending_dispatches": [
-                {"robot_id": e["robot_id"], "task_id": e["task_id"]}
-                for e in self._pending_dispatches
+                {"robot_id": rid, "task_id": t["task_id"]}
+                for rid, queue in sorted(self._robot_queues.items())
+                for t in queue
             ],
             "retry_tasks": [t["task_id"] for t in self._retry_tasks],
+            "waiting_tasks": [t["task_id"] for t in self._waiting_tasks],
+            "robot_queues": {
+                rid: [t["task_id"] for t in queue]
+                for rid, queue in sorted(self._robot_queues.items())
+            },
             "reservations": res_list,
         }
         msg = String()
@@ -913,69 +1084,6 @@ class FleetManagerNode(Node):
             return None
         return math.hypot(entry["x"] - pickup[0], entry["y"] - pickup[1])
 
-    def _score_candidates(self, candidates, required_payload, pickup):
-        """Score every eligible robot; lower score is better."""
-        dists = [self._robot_distance(e, pickup) for e in candidates]
-        known = [d for d in dists if d is not None]
-        if known:
-            fill = max(known)  # unknown position is treated conservatively
-            dists = [d if d is not None else fill for d in dists]
-        else:
-            dists = [0.0] * len(candidates)
-        dmax = max(dists) if dists else 0.0
-
-        loads = [float(e.get("workload", 0.0)) for e in candidates]
-        lmax = max(loads) if loads else 0.0
-
-        pris = [float(e.get("priority", 0.0)) for e in candidates]
-        prange = (max(pris) - min(pris)) if pris else 0.0
-
-        surpluses = [
-            float(e["payload_capacity"]) - required_payload for e in candidates
-        ]
-        srange = (max(surpluses) - min(surpluses)) if surpluses else 0.0
-
-        scored = []
-        for i, e in enumerate(candidates):
-            dist_norm = (dists[i] / dmax) if dmax > 0 else 0.0
-            load_norm = (loads[i] / lmax) if lmax > 0 else 0.0
-            prio_norm = ((max(pris) - pris[i]) / prange) if prange > 0 else 0.0
-            cap_norm = ((surpluses[i] - min(surpluses)) / srange) if srange > 0 else 0.0
-            score = (
-                self._w_distance * dist_norm
-                + self._w_workload * load_norm
-                + self._w_priority * prio_norm
-                + self._w_capability * cap_norm
-            )
-            scored.append(
-                {
-                    "robot": e,
-                    "score": score,
-                    "distance": round(dists[i], 3),
-                    "workload": loads[i],
-                    "priority": pris[i],
-                    "capability_match": round(cap_norm, 3),
-                }
-            )
-        return scored
-
-    def _select_robot(self, required_payload, pickup):
-        """Choose the best eligible robot using the weighted scoring policy."""
-        candidates = [
-            e
-            for e in self._robots.values()
-            if e["status"] == "ONLINE"  # never assign OFFLINE robots
-            and not e["current_task"]  # must be IDLE
-            and not e.get("charging", False)  # must not be charging
-            and e.get("battery", 100.0) >= self._low_battery  # must have charge
-            and e["payload_capacity"] >= required_payload  # must carry it
-        ]
-        if not candidates:
-            return None, []
-        scored = self._score_candidates(candidates, required_payload, pickup)
-        scored.sort(key=lambda s: (s["score"], s["robot"]["robot_id"]))  # deterministic
-        return scored[0]["robot"], scored
-
     def _publish_dispatch_decision(self, task, selected, scored):
         data = {
             "task_id": task["task_id"],
@@ -986,10 +1094,9 @@ class FleetManagerNode(Node):
                 {
                     "robot_id": s["robot"]["robot_id"],
                     "score": round(s["score"], 6),
-                    "distance": s["distance"],
-                    "workload": s["workload"],
-                    "priority": s["priority"],
-                    "capability_match": s["capability_match"],
+                    "busy": self._busy(s["robot"]),
+                    "queue_len": len(self._robot_queues.get(s["robot"]["robot_id"], [])),
+                    "battery": s["robot"].get("battery", 100.0),
                 }
                 for s in scored
             ],
@@ -1033,7 +1140,11 @@ class FleetManagerNode(Node):
         busy = online - idle
 
         active_tasks = len(self._reservations)
-        queued_tasks = len(self._pending_dispatches) + len(self._retry_tasks)
+        queued_tasks = (
+            sum(len(q) for q in self._robot_queues.values())
+            + len(self._waiting_tasks)
+            + len(self._retry_tasks)
+        )
 
         hb_robots = []
         for robot_id in sorted(self._robots):
@@ -1069,7 +1180,8 @@ class FleetManagerNode(Node):
             "reservations": {
                 "active": active_tasks,
                 "reserved_cells": len(self._cell_owners),
-                "pending_dispatches": len(self._pending_dispatches),
+                "pending_dispatches": sum(len(q) for q in self._robot_queues.values()),
+                "waiting_tasks": len(self._waiting_tasks),
                 "retry_tasks": len(self._retry_tasks),
                 "released_total": self._reservations_released,
             },

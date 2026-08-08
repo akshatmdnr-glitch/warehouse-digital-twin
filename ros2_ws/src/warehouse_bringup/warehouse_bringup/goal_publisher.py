@@ -1,13 +1,21 @@
 """Publish a single navigation goal pose.
 
 Accepts x, y, yaw parameters and publishes as geometry_msgs/PoseStamped.
+
+The static goal only applies while the robot's task manager is idle — when a
+fleet task is active (state GO_TO_PICKUP/PICKING/GO_TO_DROPOFF/DROPPING) this
+publisher stays silent so the active task's goal is authoritative.
 """
 
+import json
 import math
 
 import rclpy
 from geometry_msgs.msg import Point, PoseStamped, Quaternion
 from rclpy.node import Node
+from std_msgs.msg import String
+
+_ACTIVE_STATES = {"GO_TO_PICKUP", "PICKING", "GO_TO_DROPOFF", "DROPPING"}
 
 
 def _euler_to_quaternion(yaw):
@@ -27,7 +35,11 @@ class GoalPublisher(Node):
         y = self.get_parameter("y").value
         yaw = self.get_parameter("yaw").value
 
+        self._task_active = False
         self._pub = self.create_publisher(PoseStamped, "/goal_pose", 10)
+        self._state_sub = self.create_subscription(
+            String, "/task_state", self._state_callback, 10
+        )
         self._timer = self.create_timer(1.0, self._publish_goal)
 
         self._goal = PoseStamped()
@@ -37,10 +49,18 @@ class GoalPublisher(Node):
 
         self.get_logger().info(f"Goal set: x={x:.2f}, y={y:.2f}, yaw={yaw:.2f}")
 
+    def _state_callback(self, msg):
+        try:
+            data = json.loads(msg.data)
+            self._task_active = data.get("state") in _ACTIVE_STATES
+        except (ValueError, TypeError):
+            pass
+
     def _publish_goal(self):
+        if self._task_active:
+            return
         self._goal.header.stamp = self.get_clock().now().to_msg()
         self._pub.publish(self._goal)
-        self.get_logger().debug("Goal republished")
 
 
 def main():

@@ -2,6 +2,15 @@
 
 Subscribes: /plan (nav_msgs/Path), /amcl_pose (PoseWithCovarianceStamped)
 Publishes:  /cmd_vel (geometry_msgs/Twist)
+
+Path-following behaviour:
+  * The lookahead point is selected by walking forward along the path for a
+    fixed arc-length distance (lookahead_distance), so the robot commits to
+    the plan instead of chasing the nearest waypoint cell.
+  * Linear and angular velocities are rate-limited (acceleration limited) so
+    steering corrections ramp in smoothly instead of snapping.
+  * The robot only slows down for genuinely sharp turns and near the goal;
+    in open aisles it holds a steady speed on the planned trajectory.
 """
 
 import math
@@ -19,16 +28,27 @@ class ControllerNode(Node):
         self.declare_parameter("angular_speed", 0.8)
         self.declare_parameter("goal_tolerance", 0.15)
         self.declare_parameter("waypoint_tolerance", 0.1)
-        self.declare_parameter("lookahead_distance", 0.5)
+        self.declare_parameter("lookahead_distance", 0.9)
+        self.declare_parameter("max_linear_accel", 0.5)
+        self.declare_parameter("max_angular_accel", 1.5)
+        self.declare_parameter("turn_slow_threshold", 0.25)
+        self.declare_parameter("turn_slow_factor", 0.6)
 
         self._linear_speed = self.get_parameter("linear_speed").value
         self._angular_speed = self.get_parameter("angular_speed").value
         self._goal_tolerance = self.get_parameter("goal_tolerance").value
         self._waypoint_tolerance = self.get_parameter("waypoint_tolerance").value
         self._lookahead = self.get_parameter("lookahead_distance").value
+        self._max_linear_accel = self.get_parameter("max_linear_accel").value
+        self._max_angular_accel = self.get_parameter("max_angular_accel").value
+        self._turn_slow_threshold = self.get_parameter("turn_slow_threshold").value
+        self._turn_slow_factor = self.get_parameter("turn_slow_factor").value
 
         self._path = None
         self._current_pose = None
+        self._dt = 0.1  # matches the control timer period
+        self._last_linear = 0.0
+        self._last_angular = 0.0
 
         self._plan_sub = self.create_subscription(
             Path, "/plan", self._plan_callback, 10
@@ -38,16 +58,19 @@ class ControllerNode(Node):
         )
         self._cmd_pub = self.create_publisher(TwistStamped, "/cmd_vel", 10)
 
-        self._timer = self.create_timer(0.1, self._control_loop)
+        self._timer = self.create_timer(self._dt, self._control_loop)
 
         self.get_logger().info(
             f"Controller ready: speed={self._linear_speed} m/s, "
             f"angular={self._angular_speed} rad/s, "
+            f"lookahead={self._lookahead} m, "
             f"tolerance={self._goal_tolerance} m"
         )
 
     def _plan_callback(self, msg):
         self._path = msg.poses
+        self._last_linear = 0.0
+        self._last_angular = 0.0
         self.get_logger().info(f"New path: {len(self._path)} waypoints")
 
     def _pose_callback(self, msg):
@@ -80,7 +103,7 @@ class ControllerNode(Node):
             self._publish_cmd(0.0, 0.0)
             return
 
-        # Find nearest waypoint index
+        # Find nearest waypoint index (project robot onto the path).
         nearest_idx = 0
         nearest_dist = float("inf")
         for i, pose_stamped in enumerate(self._path):
@@ -91,8 +114,11 @@ class ControllerNode(Node):
                 nearest_dist = d
                 nearest_idx = i
 
-        # Find lookahead point
-        lookahead_idx = min(nearest_idx + 3, len(self._path) - 1)
+        # Distance-based lookahead: walk forward along the path for a fixed
+        # arc-length (lookahead_distance) instead of a fixed waypoint count.
+        # This makes the robot commit to the planned trajectory far ahead and
+        # eliminates the constant micro-steering of a short fixed lookahead.
+        lookahead_idx = self._find_lookahead_index(nearest_idx)
         target = self._path[lookahead_idx].pose
         tx = target.position.x
         ty = target.position.y
@@ -115,15 +141,40 @@ class ControllerNode(Node):
         angular_z = self._angular_speed * curvature
         angular_z = max(-self._angular_speed, min(self._angular_speed, angular_z))
 
-        # Linear velocity — slow down when turning strongly
+        # Linear velocity — slow down only for genuinely sharp turns.
         linear_x = self._linear_speed
-        if abs(angular_z) > 0.3:
-            linear_x *= 0.5
+        if abs(angular_z) > self._turn_slow_threshold:
+            linear_x *= self._turn_slow_factor
         # Slow down near goal
         if dist_to_goal < self._lookahead * 2:
             linear_x *= max(0.3, dist_to_goal / (self._lookahead * 2))
 
+        # Rate-limit velocity commands so corrections ramp smoothly.
+        linear_x = self._rate_limit(linear_x, self._last_linear, self._max_linear_accel)
+        angular_z = self._rate_limit(angular_z, self._last_angular, self._max_angular_accel)
+        self._last_linear = linear_x
+        self._last_angular = angular_z
+
         self._publish_cmd(linear_x, angular_z)
+
+    def _find_lookahead_index(self, nearest_idx):
+        """Return the first waypoint at least `lookahead_distance` arc-length
+        ahead of the nearest waypoint, walking forward along the path."""
+        n = len(self._path)
+        arc = 0.0
+        idx = nearest_idx
+        while idx < n - 1:
+            w0 = self._path[idx].pose.position
+            w1 = self._path[idx + 1].pose.position
+            arc += math.hypot(w1.x - w0.x, w1.y - w0.y)
+            if arc >= self._lookahead:
+                return idx + 1
+            idx += 1
+        return n - 1
+
+    def _rate_limit(self, desired, previous, max_accel):
+        delta = max_accel * self._dt
+        return max(previous - delta, min(desired, previous + delta))
 
     def _publish_cmd(self, linear_x, angular_z):
         twist = TwistStamped()

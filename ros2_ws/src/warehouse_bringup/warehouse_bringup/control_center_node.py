@@ -609,7 +609,7 @@ class ControlCenterNode(Node):
                     f"Navigation completed for task {tid}",
                 )
                 self._clear_alert(f"task_timeout:{robot_id}")
-            track["status"] = "COMPLETED"
+                track["status"] = "COMPLETED"
         for tid in list(self._tasks):
             t = self._tasks[tid]
             if (
@@ -723,7 +723,7 @@ class ControlCenterNode(Node):
                 task_id,
                 {
                     "id": task_id,
-                    "status": "RUNNING",
+                    "status": "ASSIGNED",
                     "robot": rid,
                     "priority": 1,
                     "pickup": None,
@@ -731,7 +731,20 @@ class ControlCenterNode(Node):
                     "first_seen": time.time(),
                 },
             )
-            track.update({"status": "RUNNING", "robot": rid})
+            # The fleet commits a task optimistically as soon as it selects a
+            # robot, even while the route is still queued (pending dispatch).
+            # A task is only RUNNING once the robot's execution engine has
+            # actually started working it — derived from the authoritative
+            # exec_state, never from the fleet's current_task alone.
+            exec_state = r.get("exec_state", "") or ""
+            running_states = {
+                "MOVING_TO_PICKUP", "PICKING", "CARRYING",
+                "MOVING_TO_DROPOFF", "DROPPING", "PLANNING", "ASSIGNED",
+            }
+            if exec_state in running_states:
+                track.update({"status": "RUNNING", "robot": rid})
+            elif track.get("status") != "RUNNING":
+                track.update({"status": "ASSIGNED", "robot": rid})
             if not track.get("run_started"):
                 track["run_started"] = time.time()
         prev_task = st.get("_prev_fleet_task")
@@ -903,9 +916,10 @@ class ControlCenterNode(Node):
             "planner_weights": {
                 "node": "fleet_manager",
                 "score_w_distance": 1.0,
-                "score_w_workload": 1.0,
-                "score_w_priority": 1.0,
-                "score_w_capability": 1.0,
+                "score_w_queue": 1.0,
+                "score_w_battery": 1.0,
+                "score_w_current": 10.0,
+                "score_w_eta": 1.0,
             },
             "traffic": {
                 "node": "fleet_manager",
@@ -951,13 +965,13 @@ class ControlCenterNode(Node):
             },
             "stations": {
                 "node": "control_center",
-                "robot1": [0.0, 5.0],
-                "robot2": [0.0, -5.0],
+                "robot1": [0.0, 8.0],
+                "robot2": [0.0, -8.0],
             },
             "homes": {
                 "node": "control_center",
-                "robot1": [0.0, 0.0],
-                "robot2": [0.0, 0.0],
+                "robot1": [0.0, 5.0],
+                "robot2": [0.0, -5.0],
             },
             "backend": {
                 "node": "control_center",
@@ -1513,7 +1527,8 @@ class ControlCenterNode(Node):
             rid = r.get("robot_id")
             st = self._robot_state.get(rid, self._fresh_robot_state())
             battery = r.get("battery")
-            is_charging = bool(r.get("charging", False))
+            exec_state = r.get("exec_state", "") or ""
+            is_charging = exec_state == "CHARGING" or bool(r.get("charging", False))
             status = r.get("status")
             entry = {
                 "id": rid,
@@ -1524,6 +1539,8 @@ class ControlCenterNode(Node):
                 "yaw": st.get("yaw"),
                 "battery": battery,
                 "charging": is_charging,
+                "exec_state": exec_state or "UNKNOWN",
+                "moving": bool(r.get("moving", False)),
                 "current_task": r.get("current_task", ""),
                 "speed": {"lin": st.get("speed_lin"), "ang": st.get("speed_ang")},
                 "goal": st.get("goal"),
@@ -1568,10 +1585,13 @@ class ControlCenterNode(Node):
                     }
                     break
             robots.append(entry)
+            # Fleet-state counters derive from the authoritative exec_state.
             if status == "OFFLINE":
                 offline += 1
-            elif is_charging:
+            elif exec_state == "CHARGING":
                 charging += 1
+            elif exec_state and exec_state != "IDLE" and exec_state != "UNKNOWN":
+                active += 1
             elif r.get("current_task"):
                 active += 1
             else:
@@ -1656,10 +1676,18 @@ class ControlCenterNode(Node):
                     for p in self._reservations.get("pending_dispatches", [])
                 ]
                 + [
+                    {"robot_id": "waiting", "task_id": t}
+                    for t in self._reservations.get("waiting_tasks", [])
+                ]
+                + [
                     {"robot_id": "—", "task_id": t}
                     for t in self._reservations.get("retry_tasks", [])
                 ],
-                "pending_count": len(self._reservations.get("pending_dispatches", [])),
+                "pending_count": (
+                    len(self._reservations.get("pending_dispatches", []))
+                    + sum(len(q) for q in self._reservations.get("robot_queues", {}).values())
+                    + len(self._reservations.get("waiting_tasks", []))
+                ),
                 "retry_count": len(self._reservations.get("retry_tasks", [])),
             },
             "events": events,

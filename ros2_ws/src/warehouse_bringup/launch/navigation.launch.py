@@ -57,7 +57,7 @@ def generate_launch_description():
             'y': LaunchConfiguration('y'),
             'yaw': LaunchConfiguration('yaw'),
         }],
-        remappings=[('/goal_pose', 'goal_pose')],
+        remappings=[('/goal_pose', 'goal_pose'), ('/task_state', 'task_state')],
     )
 
     # Path planner (namespaced)

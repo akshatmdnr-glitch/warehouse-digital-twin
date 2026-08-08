@@ -19,8 +19,9 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import (AppendEnvironmentVariable, DeclareLaunchArgument,
                             SetEnvironmentVariable)
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, TextSubstitution
 from launch_ros.actions import Node
+from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description():
@@ -37,6 +38,8 @@ def generate_launch_description():
     # ---- Namespace / model arguments ----
     namespace = LaunchConfiguration('namespace')
     robot_name = LaunchConfiguration('robot_name', default=tb3_model)
+    model_variant = LaunchConfiguration(
+        'model_variant', default='turtlebot3_' + tb3_model)
 
     declare_namespace = DeclareLaunchArgument(
         'namespace', default_value='',
@@ -44,6 +47,12 @@ def generate_launch_description():
     declare_robot_name = DeclareLaunchArgument(
         'robot_name', default_value=tb3_model,
         description='Gazebo model name (must be unique per robot)')
+    declare_model_variant = DeclareLaunchArgument(
+        'model_variant', default_value='turtlebot3_' + tb3_model,
+        description='Package model directory (unique gz topics per robot)')
+    declare_bridge_config = DeclareLaunchArgument(
+        'bridge_config', default_value='turtlebot3_burger_bridge.yaml',
+        description='ROS-Gazebo bridge config in the package config/ dir')
 
     # ---- Spawn pose arguments ----
     declare_x = DeclareLaunchArgument('spawn_x', default_value='0.0',
@@ -66,13 +75,14 @@ def generate_launch_description():
     pitch = LaunchConfiguration('spawn_pitch')
     yaw = LaunchConfiguration('spawn_yaw')
 
-    # ---- Build model SDF path ----
-    sdf_path = os.path.join(
-        get_package_share_directory('turtlebot3_gazebo'),
+    # ---- Build model SDF path (prefer the package-local model so the CPU
+    # lidar variant is used; falls back to turtlebot3_gazebo) ----
+    sdf_path = PathJoinSubstitution([
+        FindPackageShare('warehouse_bringup'),
         'models',
-        model_folder,
+        model_variant,
         'model.sdf',
-    )
+    ])
 
     # ---- Spawn via ros_gz_sim create ----
     spawn_node = Node(
@@ -91,12 +101,14 @@ def generate_launch_description():
         output='screen',
     )
 
-    # ---- ROS-Gazebo bridge (namespaced so each robot's topics are unique) ----
-    bridge_config = os.path.join(
-        get_package_share_directory('turtlebot3_gazebo'),
-        'params',
-        model_folder + '_bridge.yaml',
-    )
+    # ---- ROS-Gazebo bridge (unique gz topics per robot model variant) ----
+    bridge_config = PathJoinSubstitution([
+        FindPackageShare('warehouse_bringup'),
+        'config',
+        LaunchConfiguration(
+            'bridge_config',
+            default='turtlebot3_burger_bridge.yaml'),
+    ])
 
     bridge_node = Node(
         package='ros_gz_bridge',
@@ -105,7 +117,7 @@ def generate_launch_description():
         arguments=[
             '--ros-args',
             '-p',
-            f'config_file:={bridge_config}',
+            [TextSubstitution(text='config_file:='), bridge_config],
         ],
         output='screen',
     )
@@ -128,6 +140,8 @@ def generate_launch_description():
         set_gz_resource,
         declare_namespace,
         declare_robot_name,
+        declare_model_variant,
+        declare_bridge_config,
         declare_x,
         declare_y,
         declare_z,

@@ -6,6 +6,9 @@ local state (/ns/task_state, /ns/queue_info, /ns/amcl_pose). It also simulates
 battery: drains while executing, recharges at critical battery, and publishes
 /ns/battery_status plus a charging-station goal on /ns/goal_pose.
 
+The pose relay (/robot_pose) is published at 10 Hz so the backend, dashboard
+and Control Center track the robot's live pose continuously.
+
 Usage:
     ros2 launch warehouse_bringup beacon.launch.py namespace:=robot1 robot_id:=robot1
 """
@@ -75,6 +78,7 @@ def generate_launch_description():
             'payload_capacity': payload,
             'max_speed': speed,
             'priority': priority,
+            'publish_rate': 10.0,
             'initial_battery': initial_battery,
             'discharge_rate': discharge,
             'charge_rate': charge,
@@ -89,6 +93,8 @@ def generate_launch_description():
             ('/task_state', 'task_state'),
             ('/queue_info', 'queue_info'),
             ('/amcl_pose', 'amcl_pose'),
+            ('/odom', 'odom'),
+            ('/plan', 'plan'),
             ('/battery_status', 'battery_status'),
             ('/goal_pose', 'goal_pose'),
             # publishers stay on the global fleet topics (absolute, unaffected)

@@ -38,10 +38,14 @@ class PlannerNode(Node):
         self.declare_parameter("grid_cell_size", 0.05)
         self.declare_parameter("obstacle_cost", 100.0)
         self.declare_parameter("inflation_radius_cells", 2)
+        self.declare_parameter("replan_min_dist", 0.15)  # replan when moved this far
+        self.declare_parameter("replan_min_interval", 0.5)  # or after this many s
 
         self._cell_size = self.get_parameter("grid_cell_size").value
         self._obstacle_cost = self.get_parameter("obstacle_cost").value
         self._inflation = self.get_parameter("inflation_radius_cells").value
+        self._replan_min_dist = self.get_parameter("replan_min_dist").value
+        self._replan_interval = self.get_parameter("replan_min_interval").value
 
         self._map_data = None
         self._map_info = None
@@ -61,6 +65,11 @@ class PlannerNode(Node):
 
         self._current_pose = None
         self._current_goal = None
+        # Replan throttling: only recompute when the goal changes or the robot
+        # has moved a meaningful distance, instead of on every pose update
+        # (important on a large 400x400 map where A* is expensive).
+        self._last_plan_pose = None
+        self._last_plan_time = 0.0
 
         self.get_logger().info("Planner ready, waiting for map...")
 
@@ -77,13 +86,26 @@ class PlannerNode(Node):
         pose_stamped.header = msg.header
         pose_stamped.pose = msg.pose.pose
         self._current_pose = pose_stamped
-        if self._current_goal:
+        if self._current_goal and self._should_replan():
             self._plan()
 
     def _goal_callback(self, msg):
+        # Track goal identity so we replan immediately when it changes.
+        self._goal_sig = (round(msg.pose.position.x, 3), round(msg.pose.position.y, 3))
         self._current_goal = msg
         if self._current_pose:
             self._plan()
+
+    def _should_replan(self):
+        import time
+        now = time.monotonic()
+        if self._last_plan_pose is None:
+            return True
+        dx = self._current_pose.pose.position.x - self._last_plan_pose[0]
+        dy = self._current_pose.pose.position.y - self._last_plan_pose[1]
+        if math.hypot(dx, dy) >= self._replan_min_dist:
+            return True
+        return (now - self._last_plan_time) >= self._replan_interval
 
     def _plan(self):
         if not self._map_data or not self._map_info:
@@ -104,6 +126,10 @@ class PlannerNode(Node):
                 f"No valid path from ({sx:.2f}, {sy:.2f}) to ({gx:.2f}, {gy:.2f})"
             )
             return
+
+        import time
+        self._last_plan_time = time.monotonic()
+        self._last_plan_pose = (sx, sy)
 
         path_msg = Path()
         path_msg.header.stamp = self.get_clock().now().to_msg()
@@ -134,18 +160,22 @@ class PlannerNode(Node):
         si, sj = self._world_to_grid(sx, sy)
         gi, gj = self._world_to_grid(gx, gy)
 
-        if not self._in_bounds(si, sj) or not self._in_bounds(gi, gj):
-            self.get_logger().warn("Start or goal out of map bounds")
-            return None
-
-        if self._is_obstacle(gi, gj):
-            self.get_logger().warn("Goal is on an obstacle")
-            return None
-
-        if self._is_obstacle(si, sj):
-            self.get_logger().warn("Start is on an obstacle, trying nearby free cells")
+        if not self._in_bounds(si, sj) or self._is_obstacle(si, sj) \
+                or self._near_obstacle(si, sj):
+            self.get_logger().warn(
+                "Start not drivable, snapping to nearest clear cell"
+            )
             si, sj = self._nearest_free(si, sj)
             if si is None:
+                return None
+
+        if not self._in_bounds(gi, gj) or self._is_obstacle(gi, gj) \
+                or self._near_obstacle(gi, gj):
+            self.get_logger().warn(
+                "Goal not drivable, snapping to nearest clear cell"
+            )
+            gi, gj = self._nearest_free(gi, gj)
+            if gi is None:
                 return None
 
         # A* search
@@ -166,12 +196,13 @@ class PlannerNode(Node):
                     continue
                 if self._is_obstacle(ni, nj):
                     continue
+                # Hard clearance constraint: never route a path through a cell
+                # within the inflation radius of an obstacle. This keeps the
+                # robot body (radius ~0.18 m) clear of rack corners.
+                if self._near_obstacle(ni, nj):
+                    continue
 
                 move_cost = cost_mul
-                # Add extra cost near obstacles
-                if self._near_obstacle(ni, nj):
-                    move_cost += self._obstacle_cost * 0.1
-
                 tg = cg + move_cost
                 nk = (ni, nj)
                 if tg < g_score.get(nk, float("inf")):
@@ -221,13 +252,21 @@ class PlannerNode(Node):
         return False
 
     def _nearest_free(self, i, j):
+        """Nearest cell that is drivable: not an obstacle AND not within the
+        inflation radius of an obstacle. A snapped start/goal must have the
+        same clearance as the search itself, otherwise the A* can never leave
+        (or reach) that cell."""
         for r in range(1, max(self._width, self._height)):
             for di in range(-r, r + 1):
                 for dj in range(-r, r + 1):
                     if (di == 0 and dj == 0) or abs(di) + abs(dj) > r * 2:
                         continue
                     ni, nj = i + di, j + dj
-                    if self._in_bounds(ni, nj) and not self._is_obstacle(ni, nj):
+                    if (
+                        self._in_bounds(ni, nj)
+                        and not self._is_obstacle(ni, nj)
+                        and not self._near_obstacle(ni, nj)
+                    ):
                         return ni, nj
         return None, None
 

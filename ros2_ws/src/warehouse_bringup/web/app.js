@@ -85,6 +85,14 @@ function switchTab(tab) {
     if (tab === 'events') renderEvents();
     if (tab === 'alerts') renderAlerts();
     if (tab === 'settings') renderSettings();
+    // Wire the freshly rendered panel's controls immediately so buttons work
+    // before the next state push re-renders.
+    wireControls();
+    wireTasks();
+    wireFleet();
+    wireEvents();
+    wireAlerts();
+    wireSettings();
   }
 }
 
@@ -140,7 +148,10 @@ function renderDashboard() {
 function robotTable() {
   if (!state.robots.length) return '<div class="empty">No robots registered yet</div>';
   const rows = state.robots.map((r) => {
-    const st = r.charging ? tag('warn', 'charging')
+    const es = r.exec_state || '';
+    const st = es
+      ? tag(stateTagKind(es), es)
+      : r.charging ? tag('warn', 'CHARGING')
       : r.status === 'OFFLINE' ? tag('bad', 'OFFLINE')
       : r.estop ? tag('crit', 'ESTOP')
       : r.current_task ? tag('ok', 'busy')
@@ -155,6 +166,23 @@ function robotTable() {
       <td>${r.localization}</td></tr>`;
   }).join('');
   return `<table><thead><tr><th>Robot</th><th>NS</th><th>State</th><th>Task</th><th>Battery</th><th>X</th><th>Y</th><th>Speed</th><th>Local</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+// Map the authoritative execution state to a tag kind for the Robots table.
+function stateTagKind(es) {
+  switch (es) {
+    case 'CHARGING': return 'warn';
+    case 'OFFLINE': return 'bad';
+    case 'MOVING_TO_PICKUP':
+    case 'CARRYING':
+    case 'MOVING_TO_DROPOFF': return 'ok';
+    case 'PICKING':
+    case 'DROPPING': return 'warn';
+    case 'ASSIGNED':
+    case 'PLANNING':
+    case 'RETURNING': return 'accent';
+    default: return 'info';
+  }
 }
 
 function reservationTable() {
@@ -243,7 +271,7 @@ function controlPanelHTML(r) {
       <div>Speed: ${r.speed && r.speed.lin != null ? r.speed.lin.toFixed(2) + ' m/s · ' + r.speed.ang.toFixed(2) + ' rad/s' : '—'}</div>
       <div>Battery: ${r.battery == null ? '—' : r.battery.toFixed(0) + '% ' + (r.charging ? '(charging)' : '')}</div>
       <div>Obstacle: ${r.scan_min == null ? '—' : (r.obstacle ? `<span style="color:var(--bad)">${r.scan_min.toFixed(2)} m (STOP)</span>` : `${r.scan_min.toFixed(2)} m`)}</div>
-      <div>State: ${r.estop ? 'ESTOP' : r.paused ? 'PAUSED' : r.disabled ? 'DISABLED' : r.status}</div>
+      <div>State: ${r.estop ? 'ESTOP' : r.paused ? 'PAUSED' : r.disabled ? 'DISABLED' : (r.exec_state || r.status)}</div>
     </div>`;
 }
 
@@ -256,21 +284,173 @@ function refreshRobotControls() {
 // Tasks tab
 // ═══════════════════════════════════════════════════════════════
 
+// ═══════════════════════════════════════════════════════════════
+// Warehouse locations + smart task generation
+// ═══════════════════════════════════════════════════════════════
+
+// Predefined warehouse locations (metres, Gazebo world frame). Only these are
+// used for task generation — never arbitrary/random coordinates.
+// Each rack has:
+//   shelf: (x,y) at the rack centre — where the pickup marker is drawn
+//   x,y:   the reachable driving goal just in front of the shelf
+const WAREHOUSE_RACKS = [
+  { id: 'A1', x: -4, y: 2.2, shelf: [-4, 3.0] },
+  { id: 'A2', x: 0, y: 2.2, shelf: [0, 3.0] },
+  { id: 'A3', x: 4, y: 2.2, shelf: [4, 3.0] },
+  { id: 'B1', x: -4, y: 0.8, shelf: [-4, 0.0] },
+  { id: 'B2', x: 0, y: 0.8, shelf: [0, 0.0] },
+  { id: 'B3', x: 4, y: 0.8, shelf: [4, 0.0] },
+  { id: 'C1', x: -4, y: -2.2, shelf: [-4, -3.0] },
+  { id: 'C2', x: 0, y: -2.2, shelf: [0, -3.0] },
+  { id: 'C3', x: 4, y: -2.2, shelf: [4, -3.0] },
+];
+// Fixed delivery stations — the ONLY valid drop locations. Only stations that
+// physically exist in the Gazebo warehouse (dropoff_station, pickup_station as
+// Packing, loading_dock front). Positions match the Gazebo world.
+const WAREHOUSE_DELIVERIES = [
+  { id: 'Shipping Dock', x: 2, y: -7 },
+  { id: 'Packing Station', x: -2, y: -7 },
+  { id: 'Loading Dock', x: 7, y: 0 },
+];
+
+// ── Task scheduler state ──────────────────────────────────────────────
+// Round-robin cursors keep consecutive tasks rotating fairly across shelves
+// and stations. `_manualPickup` / `_manualDelivery` are set when the operator
+// edits a dropdown so their choice is preserved instead of being overwritten.
+let _pickupCursor = 0;
+let _deliveryCursor = 0;
+let _lastTaskPickup = null;    // last shelf id used (avoid immediate repeat)
+let _lastTaskDelivery = null;  // last station id used
+let _manualPickup = false;
+let _manualDelivery = false;
+
+// Shelves currently reserved by active (non-terminal) tasks. Derived purely
+// from the live state so the scheduler stays in sync with the backend.
+function _reservedShelves() {
+  const reserved = new Set();
+  for (const t of (state.tasks && state.tasks.list) || []) {
+    if (!t.pickup) continue;
+    if (t.status === 'COMPLETED' || t.status === 'CANCELLED') continue;
+    const rack = _nearestRack(t.pickup[0], t.pickup[1]);
+    if (rack) reserved.add(rack);
+  }
+  return reserved;
+}
+
+// Fair pick: next free shelf in rotation, balancing rows (A/B/C) and aisles
+// (1/2/3). Never repeats the immediately-used shelf while another is free and
+// never duplicates a shelf reserved by an active task — unless every shelf is
+// already busy.
+function _pickPickup(robotHint) {
+  const reserved = _reservedShelves();
+  const allBusy = reserved.size >= WAREHOUSE_RACKS.length;
+  const avoid = new Set(reserved);
+  if (!allBusy && _lastTaskPickup) avoid.add(_lastTaskPickup);
+
+  for (let step = 0; step < WAREHOUSE_RACKS.length; step++) {
+    const r = WAREHOUSE_RACKS[(_pickupCursor + step) % WAREHOUSE_RACKS.length];
+    if (avoid.has(r.id)) continue;
+    _pickupCursor = (WAREHOUSE_RACKS.indexOf(r) + 1) % WAREHOUSE_RACKS.length;
+    _lastTaskPickup = r.id;
+    return r;
+  }
+  // every shelf busy (or all avoided): reuse rotation
+  const r = WAREHOUSE_RACKS[_pickupCursor % WAREHOUSE_RACKS.length];
+  _pickupCursor = (_pickupCursor + 1) % WAREHOUSE_RACKS.length;
+  _lastTaskPickup = r.id;
+  return r;
+}
+
+function _pickDelivery() {
+  for (let step = 0; step < WAREHOUSE_DELIVERIES.length; step++) {
+    const d = WAREHOUSE_DELIVERIES[(_deliveryCursor + step) % WAREHOUSE_DELIVERIES.length];
+    if (d.id === _lastTaskDelivery && WAREHOUSE_DELIVERIES.length > 1) continue;
+    _deliveryCursor = (WAREHOUSE_DELIVERIES.indexOf(d) + 1) % WAREHOUSE_DELIVERIES.length;
+    _lastTaskDelivery = d.id;
+    return d;
+  }
+  const d = WAREHOUSE_DELIVERIES[_deliveryCursor % WAREHOUSE_DELIVERIES.length];
+  _deliveryCursor = (_deliveryCursor + 1) % WAREHOUSE_DELIVERIES.length;
+  return d;
+}
+
+// Preview the next fair shelf WITHOUT consuming it (used to seed the dropdown).
+function _peekPickup() {
+  const avoid = _reservedShelves();
+  const allBusy = avoid.size >= WAREHOUSE_RACKS.length;
+  if (!allBusy && _lastTaskPickup) avoid.add(_lastTaskPickup);
+  for (let step = 0; step < WAREHOUSE_RACKS.length; step++) {
+    const r = WAREHOUSE_RACKS[(_pickupCursor + step) % WAREHOUSE_RACKS.length];
+    if (avoid.has(r.id)) continue;
+    return r;
+  }
+  return WAREHOUSE_RACKS[_pickupCursor % WAREHOUSE_RACKS.length];
+}
+
+function _nearestRack(x, y) {
+  let best = null, bestD = Infinity;
+  for (const r of WAREHOUSE_RACKS) {
+    const d = Math.hypot(r.x - x, r.y - y);
+    if (d < bestD) { bestD = d; best = r; }
+  }
+  return best ? best.id : null;
+}
+
+function _estimateDistance(task) {
+  if (!task || !task.pickup || !task.dropoff) return 0;
+  const [px, py] = task.pickup, [dx, dy] = task.dropoff;
+  return Math.hypot(dx - px, dy - py);
+}
+
+function _taskEta(dist) {
+  // 0.3 m/s nominal cruise; round up to whole seconds.
+  return Math.max(5, Math.round(dist / 0.3));
+}
+
+function _taskStatusTag(task) {
+  const st = task.status;
+  if (st === 'COMPLETED') return tag('ok', 'Completed');
+  if (st === 'CANCELLED') return tag('bad', 'Cancelled');
+  if (st === 'RUNNING' || st === 'ACTIVE') return tag('accent', 'Running');
+  if (st === 'ASSIGNED' || st === 'WAITING') return tag('info', 'Assigned');
+  return tag('muted', st || 'Pending');
+}
+
+function _robotBadge(task) {
+  if (task.robot && task.robot !== 'NONE') return `<span class="task-robot" style="color:var(--accent)">● ${escapeHtml(task.robot)}</span>`;
+  return `<span class="task-robot muted">○ unassigned</span>`;
+}
+
+function _locBadge(label, x, y) {
+  const rack = _nearestRack(x, y);
+  const name = rack || label || '—';
+  return `<span class="loc-badge" data-x="${x}" data-y="${y}">${escapeHtml(name)}</span>`;
+}
+
 function renderTasks() {
   const panel = $('tab-tasks');
   const t = state.tasks;
   const counts = t.counts;
   const rows = t.list.slice().reverse().map((task) => {
-    const prio = tag(PRIO_LABEL[task.priority] ? (task.priority === 2 ? 'warn' : 'info') : 'muted', PRIO_LABEL[task.priority] || task.priority);
-    const st = TASK_STATUS_TAG[task.status] || 'muted';
+    const prio = PRIO_LABEL[task.priority] || task.priority;
+    const prioCls = task.priority === 2 ? 'warn' : task.priority === 0 ? 'muted' : 'info';
+    const dist = _estimateDistance(task);
+    const eta = _taskEta(dist);
+    const st = _taskStatusTag(task);
+    const pickupBadge = task.pickup ? _locBadge('PICKUP', task.pickup[0], task.pickup[1]) : '—';
+    const dropBadge = task.dropoff ? _locBadge('DROPOFF', task.dropoff[0], task.dropoff[1]) : '—';
     return `<tr data-task="${task.id}">
-      <td><b>${task.id}</b></td><td>${tag(st, task.status)}</td>
-      <td>${prio}</td><td>${task.robot || '—'}</td>
-      <td>${task.pickup ? task.pickup.map((v) => +v.toFixed(1)).join(', ') : '—'}</td>
-      <td>${task.dropoff ? task.dropoff.map((v) => +v.toFixed(1)).join(', ') : '—'}</td>
-      <td>
+      <td><b>${escapeHtml(task.id)}</b></td>
+      <td>${st}</td>
+      <td>${_robotBadge(task)}</td>
+      <td>${pickupBadge}</td>
+      <td>${dropBadge}</td>
+      <td class="prio-cell"><span class="tag ${prioCls}">${prio}</span></td>
+      <td>${eta}s</td>
+      <td>${dist.toFixed(1)} m</td>
+      <td class="task-actions">
         <button class="btn" data-task-act="cancel">cancel</button>
-        <button class="btn" data-task-act="delete">delete</button>
+        <button class="btn danger" data-task-act="delete">delete</button>
         <select class="prio-sel" data-task-id="${task.id}">
           <option value="0" ${task.priority === 0 ? 'selected' : ''}>Low</option>
           <option value="1" ${task.priority === 1 ? 'selected' : ''}>Normal</option>
@@ -280,30 +460,52 @@ function renderTasks() {
   }).join('');
 
   const assignOpts = state.robots.map((r) => `<option value="${r.id}">${r.id}</option>`).join('');
+  const pickupOpts = WAREHOUSE_RACKS.map((r) => `<option value="${r.id}|${r.x}|${r.y}">${r.id}</option>`).join('');
+  const deliveryOpts = WAREHOUSE_DELIVERIES.map((d) => `<option value="${d.id}|${d.x}|${d.y}">${d.id}</option>`).join('');
+
+  // queue visualization: running tasks + pending count
+  const running = t.list.filter((x) => x.status === 'RUNNING' || x.status === 'ACTIVE');
+  const pending = t.list.filter((x) => ['PENDING', 'ASSIGNED', 'WAITING'].includes(x.status));
+  const queueBlocks = [...running, ...pending].slice(0, 12).map((x) => {
+    const cls = x.status === 'RUNNING' || x.status === 'ACTIVE' ? 'q-running' : 'q-pending';
+    const st = x.status === 'RUNNING' || x.status === 'ACTIVE' ? 'RUN' : 'WAIT';
+    return `<div class="queue-block ${cls}" title="${escapeHtml(x.id)}">${escapeHtml(x.id)}<i>${st}</i></div>`;
+  }).join('');
 
   panel.innerHTML = `
     <div class="grid grid-2">
-      <div class="card">
-        <h3>Create task <span class="hint">pickup → dropoff</span></h3>
-        <div class="grid-2eq" style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr 1fr 1fr;gap:6px">
-          <div class="field"><label>Task ID (auto)</label><input id="task-id" placeholder="T123"></div>
-          <div class="field"><label>Pickup X</label><input id="task-px" type="number" value="2"></div>
-          <div class="field"><label>Pickup Y</label><input id="task-py" type="number" value="2"></div>
-          <div class="field"><label>Dropoff X</label><input id="task-dx" type="number" value="-2"></div>
-          <div class="field"><label>Dropoff Y</label><input id="task-dy" type="number" value="-2"></div>
-          <div class="field"><label>Priority</label>
+      <div class="card task-create-card">
+        <h3>Create task <span class="hint">pick from warehouse locations — balanced across robots</span></h3>
+        <div class="task-loc-row">
+          <div class="field">
+            <label>Pickup</label>
+            <select id="task-pickup-sel">${pickupOpts}</select>
+            <button class="btn" id="task-shuffle-pickup" title="cycle to another rack">↻ next</button>
+          </div>
+          <div class="field">
+            <label>Delivery</label>
+            <select id="task-delivery-sel">${deliveryOpts}</select>
+            <button class="btn" id="task-shuffle-delivery" title="cycle to another destination">↻ next</button>
+          </div>
+          <div class="field">
+            <label>Priority</label>
             <select id="task-priority"><option value="0">Low</option><option value="1" selected>Normal</option><option value="2">High</option></select>
           </div>
         </div>
-        <div class="grid-2eq" style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
-          <div class="field"><label>Required payload (kg)</label><input id="task-payload" type="number" value="0"></div>
-          <div class="field" style="display:flex;align-items:flex-end">
-            <button class="btn ok-btn wide" id="create-task" style="width:100%">Create Task</button>
+        <div class="task-loc-row">
+          <div class="field"><label>Task ID (auto)</label><input id="task-id" placeholder="auto"></div>
+          <div class="field"><label>Payload (kg)</label><input id="task-payload" type="number" value="0"></div>
+          <div class="field task-suggest">
+            <label>Suggested route</label>
+            <div id="task-suggest-text" class="suggest-text">—</div>
           </div>
+        </div>
+        <div class="bar-btn">
+          <button class="btn ok-btn wide" id="create-task" style="width:100%">＋ Create Task</button>
         </div>
       </div>
       <div class="card">
-        <h3>Assign</h3>
+        <h3>Assign <span class="hint">or leave automatic</span></h3>
         <div class="grid-2eq" style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
           <div class="field"><label>Task</label><input id="assign-task" placeholder="task id"></div>
           <div class="field"><label>Robot</label><select id="assign-robot">${assignOpts || '<option value="">—</option>'}</select></div>
@@ -312,15 +514,17 @@ function renderTasks() {
           <button class="btn ok-btn" id="assign-btn">Assign manually</button>
           <button class="btn" id="auto-btn">Return to automatic</button>
         </div>
+        <div class="hint" style="margin-top:10px">Automatic assignment prefers the nearest idle robot with sufficient battery and the shortest queue.</div>
       </div>
     </div>
     <h2 class="section">Task queue &amp; history
       <span class="hint" style="float:right">pending ${counts.pending} · running ${counts.running} · completed ${counts.completed} · cancelled ${counts.cancelled}</span>
     </h2>
-    <div class="card"><table>
-      <thead><tr><th>Task</th><th>Status</th><th>Priority</th><th>Robot</th><th>Pickup</th><th>Dropoff</th><th>Actions</th></tr></thead>
-      <tbody>${rows || '<tr><td colspan="7" class="empty">No tasks yet — create one above</td></tr>'}</tbody>
-    </table></div>
+    <div class="queue-viz card">${queueBlocks || '<div class="empty">No tasks in queue</div>'}</div>
+    <div class="card"><div class="table-wrap"><table class="task-table">
+      <thead><tr><th>Task</th><th>Status</th><th>Robot</th><th>Pickup</th><th>Dropoff</th><th>Priority</th><th>ETA</th><th>Distance</th><th>Actions</th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="9" class="empty">No tasks yet — create one above</td></tr>'}</tbody>
+    </table></div></div>
     ${state.control_center && state.control_center.backend_url ? `
       <h2 class="section">Backend task history <span class="hint">persistent</span></h2>
       <div class="card"><table>
@@ -345,6 +549,7 @@ function renderFleet() {
     return `<tr data-fleet="${r.id}">
       <td><b>${r.id}</b></td><td>${tag(r.status === 'OFFLINE' ? 'bad' : 'ok', r.status)}</td>
       <td>${r.charging ? tag('warn', 'charging') : '—'}</td>
+      <td>${r.exec_state ? tag(stateTagKind(r.exec_state), r.exec_state) : '—'}</td>
       <td>${hb}</td><td>${r.current_task || '—'}</td>
       <td>${res}</td><td>${r.robot_type || '—'}</td>
       <td>${r.localization}</td><td>${r.payload_capacity == null ? '—' : r.payload_capacity + ' kg'}</td>
@@ -361,7 +566,7 @@ function renderFleet() {
     <div class="card">
       <h3>Fleet management <span class="hint">disable/enable are bridge-level · drain/recharge are battery simulations · restart triggers a beacon reboot</span></h3>
       <table>
-        <thead><tr><th>Robot</th><th>Status</th><th>Charging</th><th>Heartbeat</th><th>Task</th><th>Reservation</th><th>Type</th><th>Localization</th><th>Capacity</th><th>Actions</th></tr></thead>
+        <thead><tr><th>Robot</th><th>Status</th><th>Charging</th><th>Exec State</th><th>Heartbeat</th><th>Task</th><th>Reservation</th><th>Type</th><th>Localization</th><th>Capacity</th><th>Actions</th></tr></thead>
         <tbody>${rows || '<tr><td colspan="10" class="empty">No robots registered</td></tr>'}</tbody>
       </table>
     </div>`;
@@ -540,23 +745,153 @@ function wireControls() {
   // Map toolbar (guarded — canvas/buttons live in the Map tab).
   const zi = $('map-zoom-in'); if (zi) zi.onclick = () => mapView && mapView.zoomBy(1.2);
   const zo = $('map-zoom-out'); if (zo) zo.onclick = () => mapView && mapView.zoomBy(1 / 1.2);
-  const ac = $('map-autocenter'); if (ac) ac.onclick = () => mapView && mapView.autoCenter();
+  const ac = $('map-autocenter');
+  if (ac) ac.onclick = () => mapView && mapView.fitWarehouse();
+}
+
+function _parseLoc(value) {
+  // "ID|x|y" -> {id, x, y}
+  const [id, x, y] = String(value || '').split('|');
+  return { id, x: parseFloat(x), y: parseFloat(y) };
+}
+
+function _updateTaskSuggest() {
+  const ps = $('task-pickup-sel');
+  const ds = $('task-delivery-sel');
+  if (!ps || !ds) return;
+  const p = _parseLoc(ps.value);
+  const d = _parseLoc(ds.value);
+  const el = $('task-suggest-text');
+  if (!el || !p.x) return;
+  const dist = Math.hypot(d.x - p.x, d.y - p.y);
+  el.textContent = `${p.id} → ${d.id}  ·  ${dist.toFixed(1)} m  ·  ~${_taskEta(dist)}s`;
+}
+
+function _smartRoute() {
+  // Auto route: next fair, unreserved shelf. (Delivery is resolved separately
+  // by the create handler so the delivery cursor advances exactly once per
+  // task — calling _pickDelivery() here would consume it for nothing.)
+  const robots = (state.robots || []).slice().sort((a, b) =>
+    (a.current_task ? 1 : 0) - (b.current_task ? 1 : 0));
+  const hint = robots[0] ? robots[0].id : null;
+  const pickup = _pickPickup(hint);
+  return { pickup };
+}
+
+// Advance the pickup dropdown to the next fair, free shelf (used after
+// creating a task so consecutive tasks differ). Marks the dropdown as
+// automatically chosen (clears manual override).
+function _advancePickupDropdown() {
+  const ps = $('task-pickup-sel');
+  if (!ps) return;
+  const next = _peekPickup();
+  _pickupCursor = (WAREHOUSE_RACKS.findIndex((r) => r.id === next.id) + 1) % WAREHOUSE_RACKS.length;
+  ps.value = `${next.id}|${next.x}|${next.y}`;
+  _manualPickup = false;
+}
+
+function _advanceDeliveryDropdown() {
+  const ds = $('task-delivery-sel');
+  if (!ds) return;
+  const next = _pickDelivery();
+  ds.value = `${next.id}|${next.x}|${next.y}`;
+  _manualDelivery = false;
 }
 
 function wireTasks() {
   const ct = $('create-task');
   if (ct) ct.onclick = async () => {
+    const ps = $('task-pickup-sel');
+    const ds = $('task-delivery-sel');
+    const p = _parseLoc(ps && ps.value);
+    const d = _parseLoc(ds && ds.value);
+
+    // Resolve pickup: respect a manual selection that is not reserved;
+    // otherwise auto-pick the next fair, free shelf.
+    const reserved = _reservedShelves();
+    let pickup = null;
+    if (_manualPickup && p.x && p.id) {
+      const shelf = WAREHOUSE_RACKS.find((r) => r.id === p.id);
+      if (shelf && !reserved.has(shelf.id)) pickup = shelf;
+    }
+    if (!pickup) {
+      const route = _smartRoute();
+      pickup = route.pickup;
+      // reflect the scheduler's choice in the dropdown
+      if (ps) ps.value = `${pickup.id}|${pickup.x}|${pickup.y}`;
+    }
+
+    // Resolve delivery: manual selection wins unless invalid.
+    let delivery = null;
+    if (_manualDelivery && d.x && d.id) {
+      delivery = WAREHOUSE_DELIVERIES.find((s) => s.id === d.id) || null;
+    }
+    if (!delivery) {
+      delivery = _pickDelivery();
+      if (ds) ds.value = `${delivery.id}|${delivery.x}|${delivery.y}`;
+    }
+
     const payload = {
       action: 'create_task',
       task_id: $('task-id').value || undefined,
-      px: parseFloat($('task-px').value || 0), py: parseFloat($('task-py').value || 0),
-      dx: parseFloat($('task-dx').value || 0), dy: parseFloat($('task-dy').value || 0),
-      priority: parseInt($('task-priority').value, 10),
-      required_payload: parseFloat($('task-payload').value || 0),
+      px: pickup.x, py: pickup.y,
+      dx: delivery.x, dy: delivery.y,
+      priority: parseInt(($('task-priority') || {}).value || 1, 10),
+      required_payload: parseFloat(($('task-payload') || {}).value || 0),
     };
-    const res = await doCommand(payload, 'Task created');
+    const res = await doCommand(payload, `Task created: ${pickup.id} → ${delivery.id}`);
     if (res && res.ok && res.task_id) $('task-id').value = res.task_id;
+
+    // After creation, advance the dropdowns to the next fair suggestion so
+    // consecutive tasks differ (unless the operator chose manually — in which
+    // case we keep their selection for the next task).
+    if (!_manualPickup) _advancePickupDropdown();
+    if (!_manualDelivery) _advanceDeliveryDropdown();
+    _updateTaskSuggest();
   };
+
+  const sp = $('task-shuffle-pickup');
+  if (sp) sp.onclick = () => {
+    const cur = _parseLoc($('task-pickup-sel').value);
+    const i = WAREHOUSE_RACKS.findIndex((r) => r.id === cur.id);
+    const next = WAREHOUSE_RACKS[(i + 1) % WAREHOUSE_RACKS.length];
+    $('task-pickup-sel').value = `${next.id}|${next.x}|${next.y}`;
+    _manualPickup = true;   // operator chose a specific shelf — preserve it
+    _updateTaskSuggest();
+  };
+  const sd = $('task-shuffle-delivery');
+  if (sd) sd.onclick = () => {
+    const cur = _parseLoc($('task-delivery-sel').value);
+    const i = WAREHOUSE_DELIVERIES.findIndex((d) => d.id === cur.id);
+    const next = WAREHOUSE_DELIVERIES[(i + 1) % WAREHOUSE_DELIVERIES.length];
+    $('task-delivery-sel').value = `${next.id}|${next.x}|${next.y}`;
+    _manualDelivery = true; // operator chose a specific station — preserve it
+    _updateTaskSuggest();
+  };
+  const ps = $('task-pickup-sel');
+  if (ps) ps.onchange = () => { _manualPickup = true; _updateTaskSuggest(); };
+  const ds = $('task-delivery-sel');
+  if (ds) ds.onchange = () => { _manualDelivery = true; _updateTaskSuggest(); };
+  // Seed the dropdowns with the scheduler's next fair suggestion, but only if
+  // they are not already showing a valid selection (avoids clobbering a value
+  // that render() just restored or the operator just chose).
+  if (ps && !_manualPickup) {
+    const cur = _parseLoc(ps.value);
+    const valid = cur.id && WAREHOUSE_RACKS.some((r) => r.id === cur.id && r.x === cur.x && r.y === cur.y);
+    if (!valid) {
+      const next = _peekPickup();
+      ps.value = `${next.id}|${next.x}|${next.y}`;
+    }
+  }
+  if (ds && !_manualDelivery) {
+    const cur = _parseLoc(ds.value);
+    const valid = cur.id && WAREHOUSE_DELIVERIES.some((s) => s.id === cur.id && s.x === cur.x && s.y === cur.y);
+    if (!valid) {
+      const next = WAREHOUSE_DELIVERIES[_deliveryCursor % WAREHOUSE_DELIVERIES.length];
+      ds.value = `${next.id}|${next.x}|${next.y}`;
+    }
+  }
+  _updateTaskSuggest();
   document.querySelectorAll('[data-task-act]').forEach((b) => {
     b.onclick = () => {
       const tr = b.closest('tr');

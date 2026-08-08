@@ -120,9 +120,12 @@ def serve(port):
             else:
                 self._send(_PAGE, 'text/html; charset=utf-8')
 
-        def _json(self):
+        def _json(self, body=None):
             with LOCK:
-                body = json.dumps(METRICS)
+                if body is None:
+                    body = json.dumps(METRICS)
+                else:
+                    body = json.dumps(body)
             self._send(body, 'application/json')
 
         def _send(self, body, ctype):

@@ -1,0 +1,23 @@
+<?xml version="1.0" ?>
+<sdf version="1.6">
+<model name="rack_sign_C2">
+  <static>true</static>
+  <link name="link">
+<visual name="panel">
+<pose>0 0 0.25 0 0 0</pose>
+<geometry><box><size>1.6 0.08 0.5</size></box></geometry>
+<material><ambient>1 1 1 1</ambient>
+<diffuse>1 1 1 1</diffuse>
+<specular>0.1 0.1 0.1 1</specular>
+<pbr><metal><albedo_map>textures/C2.png</albedo_map><roughness>0.55</roughness><metalness>0.1</metalness></metal></pbr></material>
+</visual>
+<visual name="pole">
+<pose>0 -0.0 0.04 0 0 0</pose>
+<geometry><box><size>0.06 0.06 0.08</size></box></geometry>
+<material><ambient>0.1 0.1 0.12 1</ambient>
+<diffuse>0.25 0.25 0.3 1</diffuse>
+<specular>0.1 0.1 0.1 1</specular></material>
+</visual>
+  </link>
+</model>
+</sdf>

@@ -1,7 +1,19 @@
 /**:
   ros__parameters:
+    # Cruise speed and turn authority.
     linear_speed: 0.3
     angular_speed: 0.8
+    # Arrival check.
     goal_tolerance: 0.15
     waypoint_tolerance: 0.1
-    lookahead_distance: 0.5
+    # Commit to the plan: look 0.9 m ahead along the path instead of chasing
+    # the nearest waypoint cell (~0.15 m on the 0.05 m grid). Larger lookahead
+    # = fewer steering corrections, smoother turns, no zig-zag.
+    lookahead_distance: 0.9
+    # Velocity rate limiting (acceleration caps). Smooths all corrections so
+    # the robot eases into turns instead of snapping the steering.
+    max_linear_accel: 0.5
+    max_angular_accel: 1.5
+    # Only slow the cruise speed for genuinely sharp turns.
+    turn_slow_threshold: 0.25
+    turn_slow_factor: 0.6

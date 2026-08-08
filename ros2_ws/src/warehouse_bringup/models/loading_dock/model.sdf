@@ -1,0 +1,76 @@
+<?xml version="1.0" ?>
+<sdf version="1.6">
+<model name="loading_dock">
+  <static>true</static>
+  <link name="link">
+    <collision name="platform">
+      <pose>0 0 0.5 0 0 0</pose>
+      <geometry><box><size>2.0 3.0 1.0</size></box></geometry>
+    </collision>
+<visual name="platform_vis">
+<pose>0 0 0.5 0 0 0</pose>
+<geometry><box><size>2.0 3.0 1.0</size></box></geometry>
+<material><ambient>0.42 0.42 0.45 1</ambient>
+<diffuse>0.58 0.58 0.62 1</diffuse>
+<specular>0.2 0.2 0.2 1</specular></material>
+</visual>
+<visual name="platform_top">
+<pose>0 0 1.0 0 0 0</pose>
+<geometry><box><size>1.96 2.96 0.01</size></box></geometry>
+<material><ambient>0.3 0.3 0.32 1</ambient>
+<diffuse>0.45 0.45 0.48 1</diffuse>
+<specular>0.1 0.1 0.1 1</specular></material>
+</visual>
+<visual name="stripe1">
+<pose>0 -1.05 1.02 0 0 0</pose>
+<geometry><box><size>1.9 0.16 0.02</size></box></geometry>
+<material><ambient>0.8 0.65 0.1 1</ambient>
+<diffuse>0.95 0.8 0.15 1</diffuse>
+<specular>0.3 0.25 0.1 1</specular></material>
+</visual>
+<visual name="stripe2">
+<pose>0 1.05 1.02 0 0 0</pose>
+<geometry><box><size>1.9 0.16 0.02</size></box></geometry>
+<material><ambient>0.8 0.65 0.1 1</ambient>
+<diffuse>0.95 0.8 0.15 1</diffuse>
+<specular>0.3 0.25 0.1 1</specular></material>
+</visual>
+<visual name="canopy">
+<pose>0 0 2.6 0 0 0</pose>
+<geometry><box><size>2.4 3.3 0.1</size></box></geometry>
+<material><ambient>0.15 0.16 0.18 1</ambient>
+<diffuse>0.32 0.34 0.38 1</diffuse>
+<specular>0.2 0.2 0.2 1</specular></material>
+</visual>
+<visual name="doorpost_left">
+<pose>0.8 -1.55 1.6 0 0 0</pose>
+<geometry><box><size>0.14 0.14 2.2</size></box></geometry>
+<material><ambient>0.15 0.16 0.18 1</ambient>
+<diffuse>0.32 0.34 0.38 1</diffuse>
+<specular>0.2 0.2 0.2 1</specular></material>
+</visual>
+<visual name="doorpost_right">
+<pose>0.8 1.55 1.6 0 0 0</pose>
+<geometry><box><size>0.14 0.14 2.2</size></box></geometry>
+<material><ambient>0.15 0.16 0.18 1</ambient>
+<diffuse>0.32 0.34 0.38 1</diffuse>
+<specular>0.2 0.2 0.2 1</specular></material>
+</visual>
+<visual name="door_header">
+<pose>0.8 0 2.85 0 0 0</pose>
+<geometry><box><size>0.14 2.8 0.14</size></box></geometry>
+<material><ambient>0.15 0.16 0.18 1</ambient>
+<diffuse>0.32 0.34 0.38 1</diffuse>
+<specular>0.2 0.2 0.2 1</specular></material>
+</visual>
+<visual name="dock_light">
+<pose>0.8 -0.5 2.78 0 0 0</pose>
+<geometry><box><size>0.3 0.5 0.1</size></box></geometry>
+<material><ambient>0.5 0.3 0.08 1</ambient>
+<diffuse>0.8 0.5 0.15 1</diffuse>
+<specular>0.1 0.1 0.1 1</specular>
+<emissive>0.95 0.6 0.2 1</emissive></material>
+</visual>
+  </link>
+</model>
+</sdf>

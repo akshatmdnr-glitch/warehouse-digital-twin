@@ -26,6 +26,10 @@ def generate_launch_description():
     robot_name = LaunchConfiguration('robot_name', default='burger')
     robot_id = LaunchConfiguration('robot_id', default='tb3_1')
     map_file = LaunchConfiguration('map', default='warehouse_map.yaml')
+    model_variant = LaunchConfiguration('model_variant',
+                                        default='turtlebot3_burger')
+    bridge_config = LaunchConfiguration('bridge_config',
+                                        default='turtlebot3_burger_bridge.yaml')
 
     declare_namespace = DeclareLaunchArgument(
         'namespace', default_value='',
@@ -36,6 +40,12 @@ def generate_launch_description():
     declare_robot_id = DeclareLaunchArgument(
         'robot_id', default_value='tb3_1',
         description='Robot id registered with the fleet')
+    declare_model_variant = DeclareLaunchArgument(
+        'model_variant', default_value='turtlebot3_burger',
+        description='Model dir (unique gz topics) for this robot')
+    declare_bridge_config = DeclareLaunchArgument(
+        'bridge_config', default_value='turtlebot3_burger_bridge.yaml',
+        description='Bridge config file in the package config/ dir')
 
     # Spawn: model + bridge + TF (all in the robot's namespace)
     spawn_launch = IncludeLaunchDescription(
@@ -43,6 +53,8 @@ def generate_launch_description():
         launch_arguments={
             'namespace': namespace,
             'robot_name': robot_name,
+            'model_variant': model_variant,
+            'bridge_config': bridge_config,
             'spawn_x': LaunchConfiguration('spawn_x', default='0.0'),
             'spawn_y': LaunchConfiguration('spawn_y', default='0.0'),
             'spawn_z': LaunchConfiguration('spawn_z', default='0.01'),
@@ -81,7 +93,7 @@ def generate_launch_description():
             'low_battery_threshold': LaunchConfiguration(
                 'low_battery_threshold', default='30.0'),
             'charging_station_x': LaunchConfiguration('charging_station_x', default='0.0'),
-            'charging_station_y': LaunchConfiguration('charging_station_y', default='5.0'),
+            'charging_station_y': LaunchConfiguration('charging_station_y', default='8.0'),
         }.items(),
     )
 
@@ -89,6 +101,8 @@ def generate_launch_description():
         declare_namespace,
         declare_robot_name,
         declare_robot_id,
+        declare_model_variant,
+        declare_bridge_config,
         spawn_launch,
         nav_launch,
         beacon_launch,

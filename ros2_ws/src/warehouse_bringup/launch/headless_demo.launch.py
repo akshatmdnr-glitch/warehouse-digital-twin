@@ -32,17 +32,17 @@ def generate_launch_description():
 
     declare_args = [
         DeclareLaunchArgument('robot_count', default_value='2'),
-        DeclareLaunchArgument('map', default_value='headless_map.yaml',
-                              description='Map covering the demo world (-5..5 m)'),
+        DeclareLaunchArgument('map', default_value='warehouse_world.yaml',
+                              description='Full warehouse map covering (-10..10 m)'),
         DeclareLaunchArgument('backend_url', default_value='',
                               description='Production backend URL ('' = disable ingest)'),
     ]
 
     robots = [
-        {'ns': 'robot1', 'id': 'robot1', 'spawn': [0.0, 0.0, 0.0],
-         'station': [0.0, 4.0]},
-        {'ns': 'robot2', 'id': 'robot2', 'spawn': [-1.0, 1.0, 0.5],
-         'station': [0.0, -4.0]},
+        {'ns': 'robot1', 'id': 'robot1', 'spawn': [0.0, 5.0, -1.5708],
+         'station': [0.0, 8.0], 'discharge': 0.2, 'charge': 10.0},
+        {'ns': 'robot2', 'id': 'robot2', 'spawn': [0.0, -5.0, 1.5708],
+         'station': [0.0, -8.0], 'discharge': 0.2, 'charge': 10.0},
     ]
 
     def _robot_stack(r, condition):
@@ -78,6 +78,8 @@ def generate_launch_description():
                     'namespace': ns, 'robot_id': r['id'],
                     'charging_station_x': str(r['station'][0]),
                     'charging_station_y': str(r['station'][1]),
+                    'discharge_rate': str(r.get('discharge', 1.0)),
+                    'charge_rate': str(r.get('charge', 10.0)),
                 }.items(),
                 condition=condition),
         ]
@@ -98,7 +100,7 @@ def generate_launch_description():
             'robots': ','.join(r['ns'] for r in robots),
             'spawns': json.dumps(spawns),
             'max_speed': 0.25,
-            'bounds': '[-4.8, 4.8, -4.8, 4.8]',
+            'bounds': '[-9.0, 9.0, -9.0, 9.0]',
         }]))
 
     # Global services.

@@ -1,0 +1,68 @@
+<?xml version="1.0" ?>
+<sdf version="1.6">
+<model name="pallet">
+  <static>true</static>
+  <link name="link">
+    <collision name="footprint">
+      <pose>0 0 0.07 0 0 0</pose>
+      <geometry><box><size>1.2 1.2 0.14</size></box></geometry>
+    </collision>
+<visual name="top1">
+<pose>-0.4 0 0.13 0 0 0</pose>
+<geometry><box><size>0.36 1.2 0.03</size></box></geometry>
+<material><ambient>0.35 0.26 0.15 1</ambient>
+<diffuse>0.62 0.46 0.26 1</diffuse>
+<specular>0.15 0.1 0.05 1</specular></material>
+</visual>
+<visual name="top2">
+<pose>0.0 0 0.13 0 0 0</pose>
+<geometry><box><size>0.36 1.2 0.03</size></box></geometry>
+<material><ambient>0.35 0.26 0.15 1</ambient>
+<diffuse>0.62 0.46 0.26 1</diffuse>
+<specular>0.15 0.1 0.05 1</specular></material>
+</visual>
+<visual name="top3">
+<pose>0.4 0 0.13 0 0 0</pose>
+<geometry><box><size>0.36 1.2 0.03</size></box></geometry>
+<material><ambient>0.35 0.26 0.15 1</ambient>
+<diffuse>0.62 0.46 0.26 1</diffuse>
+<specular>0.15 0.1 0.05 1</specular></material>
+</visual>
+<visual name="stringer1">
+<pose>0 -0.45 0.06 0 0 0</pose>
+<geometry><box><size>1.2 0.18 0.1</size></box></geometry>
+<material><ambient>0.28 0.2 0.11 1</ambient>
+<diffuse>0.5 0.36 0.2 1</diffuse>
+<specular>0.1 0.08 0.04 1</specular></material>
+</visual>
+<visual name="stringer2">
+<pose>0 0.45 0.06 0 0 0</pose>
+<geometry><box><size>1.2 0.18 0.1</size></box></geometry>
+<material><ambient>0.28 0.2 0.11 1</ambient>
+<diffuse>0.5 0.36 0.2 1</diffuse>
+<specular>0.1 0.08 0.04 1</specular></material>
+</visual>
+<visual name="bottom1">
+<pose>-0.4 0 0.02 0 0 0</pose>
+<geometry><box><size>0.36 1.2 0.03</size></box></geometry>
+<material><ambient>0.28 0.2 0.11 1</ambient>
+<diffuse>0.5 0.36 0.2 1</diffuse>
+<specular>0.1 0.08 0.04 1</specular></material>
+</visual>
+<visual name="bottom2">
+<pose>0.0 0 0.02 0 0 0</pose>
+<geometry><box><size>0.36 1.2 0.03</size></box></geometry>
+<material><ambient>0.28 0.2 0.11 1</ambient>
+<diffuse>0.5 0.36 0.2 1</diffuse>
+<specular>0.1 0.08 0.04 1</specular></material>
+</visual>
+<visual name="bottom3">
+<pose>0.4 0 0.02 0 0 0</pose>
+<geometry><box><size>0.36 1.2 0.03</size></box></geometry>
+<material><ambient>0.28 0.2 0.11 1</ambient>
+<diffuse>0.5 0.36 0.2 1</diffuse>
+<specular>0.1 0.08 0.04 1</specular></material>
+</visual>
+  </link>
+</model>
+</sdf>

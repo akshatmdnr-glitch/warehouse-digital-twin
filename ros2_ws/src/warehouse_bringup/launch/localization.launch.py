@@ -1,4 +1,9 @@
-"""Launch AMCL localization using a saved map.
+"""Load the warehouse map inside a robot namespace.
+
+The warehouse pose pipeline uses ONE authoritative pose source:
+sim_localization_node bridges /ns/odom -> /ns/amcl_pose (with the spawn
+offset) and publishes the matching map->odom transform on /ns/tf. This launch
+provides the map server the planner needs.
 
 Usage:
     ros2 launch warehouse_bringup localization.launch.py
@@ -9,8 +14,7 @@ Usage:
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
-from launch_ros.actions import Node
+from launch.substitutions import LaunchConfiguration
 from ament_index_python.packages import get_package_share_directory
 
 
@@ -32,25 +36,12 @@ def generate_launch_description():
         }.items(),
     )
 
-    amcl_config = PathJoinSubstitution([
-        pkg_dir, 'config', 'amcl.yaml',
-    ])
+    # The warehouse pose pipeline uses ONE authoritative pose source:
+    # sim_localization_node bridges /ns/odom -> /ns/amcl_pose (with the spawn
+    # offset) and publishes the matching map->odom transform on /ns/tf. The
+    # legacy scan-based AMCL node is intentionally NOT launched here — it was
+    # a second, disagreeing publisher of /ns/amcl_pose (uniform particle init
+    # with no /initialpose and no scan likelihood) that desynchronized every
+    # consumer. The map server above is still required by the planner.
 
-    # Namespaced AMCL: subscribes /ns/map, /ns/scan, /ns/tf and publishes
-    # /ns/amcl_pose plus the map→odom transform on /ns/tf.
-    amcl_node = Node(
-        package='warehouse_bringup',
-        executable='amcl_node',
-        name='amcl',
-        namespace=namespace,
-        output='screen',
-        parameters=[amcl_config],
-        remappings=[
-            ('/map', 'map'),
-            ('/scan', 'scan'),
-            ('/amcl_pose', 'amcl_pose'),
-            ('/initialpose', 'initialpose'),
-        ],
-    )
-
-    return LaunchDescription([declare_namespace, map_launch, amcl_node])
+    return LaunchDescription([declare_namespace, map_launch])

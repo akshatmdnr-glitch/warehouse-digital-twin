@@ -5,6 +5,21 @@ from setuptools import find_packages, setup
 
 package_name = 'warehouse_bringup'
 
+
+def _tree_files(root, dest_root):
+    """Build data_files entries that preserve the directory structure of root."""
+    entries = []
+    for dirpath, _dirnames, filenames in os.walk(root):
+        if not filenames:
+            continue
+        rel = os.path.relpath(dirpath, root)
+        dest = os.path.join(dest_root, rel) if rel != '.' else dest_root
+        entries.append(
+            (dest, [os.path.join(dirpath, f) for f in sorted(filenames)])
+        )
+    return entries
+
+
 setup(
     name=package_name,
     version='0.1.0',
@@ -20,14 +35,15 @@ setup(
         (os.path.join('share', package_name, 'worlds'),
             glob('worlds/*.sdf')),
         (os.path.join('share', package_name, 'config'),
-            glob('config/*.yaml')),
+            glob('config/*')),
         (os.path.join('share', package_name, 'maps'),
             glob('maps/*')),
         (os.path.join('share', package_name, 'web'),
             glob('web/*.html') + glob('web/*.js') + glob('web/*.css')),
         (os.path.join('share', package_name, 'web', 'js'),
             glob('web/js/*.js')),
-    ],
+    ]
+    + _tree_files('models', os.path.join('share', package_name, 'models')),
     install_requires=['setuptools'],
     entry_points={
         'console_scripts': [
@@ -46,6 +62,12 @@ setup(
             'control_center_node = warehouse_bringup.control_center_node:main',
             'backend_ingest_node = warehouse_bringup.backend_ingest_node:main',
             'sim_world_node = warehouse_bringup.sim_world_node:main',
+            'sim_localization_node = warehouse_bringup.sim_localization_node:main',
+            'package_carrier_node = warehouse_bringup.package_carrier_node:main',
+            'demo_mission_node = warehouse_bringup.demo_mission_node:main',
+            'cube_carrier_node = warehouse_bringup.cube_carrier_node:main',
+            'visualization_node = warehouse_bringup.visualization_node:main',
+            'demo_visualization_node = warehouse_bringup.demo_visualization_node:main',
         ],
     },
     zip_safe=True,

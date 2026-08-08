@@ -1,0 +1,68 @@
+<?xml version="1.0" ?>
+<sdf version="1.6">
+<model name="rack">
+  <static>true</static>
+  <link name="link">
+    <collision name="footprint">
+      <pose>0 0 1.0 0 0 0</pose>
+      <geometry><box><size>1.96 0.96 2.0</size></box></geometry>
+    </collision>
+<visual name="post_nw">
+<pose>-0.97 0.47 1.0 0 0 0</pose>
+<geometry><box><size>0.06 0.06 2.0</size></box></geometry>
+<material><ambient>0.15 0.16 0.2 1</ambient>
+<diffuse>0.32 0.34 0.4 1</diffuse>
+<specular>0.25 0.25 0.25 1</specular></material>
+</visual>
+<visual name="post_ne">
+<pose> 0.97 0.47 1.0 0 0 0</pose>
+<geometry><box><size>0.06 0.06 2.0</size></box></geometry>
+<material><ambient>0.15 0.16 0.2 1</ambient>
+<diffuse>0.32 0.34 0.4 1</diffuse>
+<specular>0.25 0.25 0.25 1</specular></material>
+</visual>
+<visual name="post_sw">
+<pose>-0.97 -0.47 1.0 0 0 0</pose>
+<geometry><box><size>0.06 0.06 2.0</size></box></geometry>
+<material><ambient>0.15 0.16 0.2 1</ambient>
+<diffuse>0.32 0.34 0.4 1</diffuse>
+<specular>0.25 0.25 0.25 1</specular></material>
+</visual>
+<visual name="post_se">
+<pose> 0.97 -0.47 1.0 0 0 0</pose>
+<geometry><box><size>0.06 0.06 2.0</size></box></geometry>
+<material><ambient>0.15 0.16 0.2 1</ambient>
+<diffuse>0.32 0.34 0.4 1</diffuse>
+<specular>0.25 0.25 0.25 1</specular></material>
+</visual>
+<visual name="shelf1">
+<pose>0 0 0.4 0 0 0</pose>
+<geometry><box><size>1.9 0.94 0.05</size></box></geometry>
+<material><ambient>0.25 0.27 0.3 1</ambient>
+<diffuse>0.5 0.53 0.58 1</diffuse>
+<specular>0.3 0.3 0.3 1</specular></material>
+</visual>
+<visual name="shelf2">
+<pose>0 0 1.0 0 0 0</pose>
+<geometry><box><size>1.9 0.94 0.05</size></box></geometry>
+<material><ambient>0.25 0.27 0.3 1</ambient>
+<diffuse>0.5 0.53 0.58 1</diffuse>
+<specular>0.3 0.3 0.3 1</specular></material>
+</visual>
+<visual name="shelf3">
+<pose>0 0 1.6 0 0 0</pose>
+<geometry><box><size>1.9 0.94 0.05</size></box></geometry>
+<material><ambient>0.25 0.27 0.3 1</ambient>
+<diffuse>0.5 0.53 0.58 1</diffuse>
+<specular>0.3 0.3 0.3 1</specular></material>
+</visual>
+<visual name="back_panel">
+<pose>0 -0.46 1.0 0 0 0</pose>
+<geometry><box><size>1.9 0.04 2.0</size></box></geometry>
+<material><ambient>0.15 0.16 0.2 1</ambient>
+<diffuse>0.32 0.34 0.4 1</diffuse>
+<specular>0.25 0.25 0.25 1</specular></material>
+</visual>
+  </link>
+</model>
+</sdf>

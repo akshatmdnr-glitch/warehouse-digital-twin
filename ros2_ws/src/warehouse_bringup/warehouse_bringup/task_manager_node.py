@@ -164,6 +164,7 @@ class TaskManagerNode(Node):
         self._publish_queue_info()
 
         if self._state == "GO_TO_PICKUP":
+            self._publish_active_goal()
             self._check_arrival(
                 self._tasks[self._active_task_idx]["pickup"],
                 "PICKING",
@@ -176,6 +177,7 @@ class TaskManagerNode(Node):
                 self._publish_goal(task["dropoff"])
                 self.get_logger().info(f'Task {task["id"]}: heading to dropoff')
         elif self._state == "GO_TO_DROPOFF":
+            self._publish_active_goal()
             self._check_arrival(
                 self._tasks[self._active_task_idx]["dropoff"],
                 "DROPPING",
@@ -247,6 +249,15 @@ class TaskManagerNode(Node):
         goal.pose.position = Point(x=x, y=y, z=0.0)
         goal.pose.orientation = Quaternion(x=0.0, y=0.0, z=0.0, w=1.0)
         self._goal_pub.publish(goal)
+
+    def _publish_active_goal(self):
+        """Re-publish the current segment goal so the active task's target
+        stays authoritative over any static goal publisher."""
+        if self._active_task_idx < 0 or self._active_task_idx >= len(self._tasks):
+            return
+        task = self._tasks[self._active_task_idx]
+        target = task["pickup"] if self._state == "GO_TO_PICKUP" else task["dropoff"]
+        self._publish_goal(target)
 
     def _publish_status(self):
         status_list = []

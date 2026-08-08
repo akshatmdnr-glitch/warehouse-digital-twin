@@ -24,9 +24,10 @@ def generate_launch_description():
     low_battery = LaunchConfiguration('low_battery_threshold')
     critical_battery = LaunchConfiguration('critical_battery_threshold')
     w_dist = LaunchConfiguration('score_w_distance')
-    w_load = LaunchConfiguration('score_w_workload')
-    w_prio = LaunchConfiguration('score_w_priority')
-    w_cap = LaunchConfiguration('score_w_capability')
+    w_queue = LaunchConfiguration('score_w_queue')
+    w_battery = LaunchConfiguration('score_w_battery')
+    w_current = LaunchConfiguration('score_w_current')
+    w_eta = LaunchConfiguration('score_w_eta')
 
     declare_args = [
         DeclareLaunchArgument(
@@ -45,14 +46,17 @@ def generate_launch_description():
             'score_w_distance', default_value='1.0',
             description='Dispatch scoring weight for distance to pickup'),
         DeclareLaunchArgument(
-            'score_w_workload', default_value='1.0',
-            description='Dispatch scoring weight for current workload'),
+            'score_w_queue', default_value='1.0',
+            description='Dispatch scoring weight per queued task'),
         DeclareLaunchArgument(
-            'score_w_priority', default_value='1.0',
-            description='Dispatch scoring weight for robot priority'),
+            'score_w_battery', default_value='1.0',
+            description='Dispatch scoring weight for low battery (per % below 100)'),
         DeclareLaunchArgument(
-            'score_w_capability', default_value='1.0',
-            description='Dispatch scoring weight for capability match'),
+            'score_w_current', default_value='10.0',
+            description='Dispatch scoring penalty for a robot already executing'),
+        DeclareLaunchArgument(
+            'score_w_eta', default_value='1.0',
+            description='Dispatch scoring weight for finish-time (ETA)'),
     ]
 
     fleet_manager = Node(
@@ -65,9 +69,10 @@ def generate_launch_description():
             'low_battery_threshold': low_battery,
             'critical_battery_threshold': critical_battery,
             'score_w_distance': w_dist,
-            'score_w_workload': w_load,
-            'score_w_priority': w_prio,
-            'score_w_capability': w_cap,
+            'score_w_queue': w_queue,
+            'score_w_battery': w_battery,
+            'score_w_current': w_current,
+            'score_w_eta': w_eta,
         }],
     )
 

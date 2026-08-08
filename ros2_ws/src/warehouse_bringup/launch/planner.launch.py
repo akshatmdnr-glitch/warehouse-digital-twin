@@ -19,6 +19,12 @@ def generate_launch_description():
         name='planner',
         namespace=namespace,
         output='screen',
+        parameters=[{
+            # Keep the path at least ~0.25 m from obstacles so the robot body
+            # (TurtleBot3 radius ~0.18 m) does not clip rack corners. 5 cells
+            # x 0.05 m = 0.25 m clearance.
+            'inflation_radius_cells': 5,
+        }],
         remappings=[
             ('/map', 'map'),
             ('/amcl_pose', 'amcl_pose'),

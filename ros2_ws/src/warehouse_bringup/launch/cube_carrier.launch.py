@@ -19,7 +19,7 @@ def generate_launch_description():
             parameters=[{
                 'world': 'warehouse_world',
                 'robot': 'robot1',
-                'carry_offset': '0.0,0.0,0.35',
+                'carry_offset': '0.0,0.0,0.16',
             }],
         ),
     ])

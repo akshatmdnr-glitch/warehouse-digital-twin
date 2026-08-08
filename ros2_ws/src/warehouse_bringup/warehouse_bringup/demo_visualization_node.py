@@ -41,7 +41,6 @@ _ROBOT_COLORS = {
     "robot1": (0.0, 1.0, 1.0),   # cyan
     "robot2": (1.0, 0.55, 0.1),  # orange
 }
-_ACTIVE_STATES = {"GO_TO_PICKUP", "PICKING", "GO_TO_DROPOFF", "DROPPING"}
 
 
 def _euler_to_quat(roll, pitch, yaw):
@@ -165,7 +164,6 @@ class DemoVisualizationNode(Node):
         self._pickup_ents = {}  # task_id -> [entity names]
         self._drop_ents = {}  # task_id -> [entity names]
         self._picking_done = set()  # task_ids whose pickup marker was removed
-        self._active_robot = None  # robot currently executing a task (camera focus)
 
         # ---- global task feed (fleet dispatcher) ----
         self.create_subscription(String, "/add_task", self._on_add_task, 10)
@@ -328,10 +326,6 @@ class DemoVisualizationNode(Node):
             if tid:
                 self._remove_dropoff_marker(tid)
             self._clear_path(rid)
-            if self._active_robot == rid:
-                self._active_robot = None
-        elif state in _ACTIVE_STATES:
-            self._active_robot = rid
         self._maybe_update_goal_label(rid)
 
     # ------------------------------------------------------------------
@@ -408,28 +402,34 @@ class DemoVisualizationNode(Node):
             ent = self._goal_ent.get(rid)
             if pose and ent:
                 self._gz.set_pose(ent, pose[0], pose[1], 2.4)
-        self._follow_active_robot()
+        self._frame_fleet()
 
-    def _follow_active_robot(self):
-        """Keep the physical robot in view.
+    def _frame_fleet(self):
+        """Keep every robot on screen.
 
-        The static default camera (8,-8,13) sits behind the 2 m racks, so a
-        robot working in the south aisle is occluded by the rack geometry while
-        its floating label stays visible — which reads as "the robot
-        disappeared". Following the active robot keeps the body on screen at
-        all times. The camera only observes; it never moves or replaces the
-        robot model.
+        The default camera (8,-8,13) sits behind the 2 m racks, so a robot
+        working in the south aisle is occluded by the rack geometry while its
+        floating label stays visible — which reads as "the robot disappeared".
+        Instead of chasing a single active robot (which pushes the other one
+        off-screen), frame the whole fleet from a high vantage so every robot
+        body stays visible regardless of which is working. The camera only
+        observes; it never moves or replaces any robot model.
         """
-        rid = self._active_robot
-        if rid is None:
-            # No task running -> gentle overview of both robots.
-            self._gz.camera((0, -14, 13), (0, 0, 0))
+        known = [
+            self._robot_pose[r] for r in self._robots_list
+            if r in self._robot_pose and self._robot_pose[r] is not None
+        ]
+        if not known:
             return
-        pose = self._robot_pose.get(rid)
-        if not pose:
-            return
-        x, y, _ = pose
-        self._gz.camera((x + 4.5, y - 4.5, 4.5), (x, y, 0))
+        cx = sum(p[0] for p in known) / len(known)
+        cy = sum(p[1] for p in known) / len(known)
+        spread = max(
+            (math.hypot(p[0] - cx, p[1] - cy) for p in known), default=0.0
+        )
+        # Distance scaled to the fleet spread; high elevation avoids rack
+        # occlusion and keeps a floor-level overview of the whole warehouse.
+        dist = max(10.0, spread * 3.0)
+        self._gz.camera((cx, cy - dist, dist * 0.9), (cx, cy, 0))
 
 
 def main():

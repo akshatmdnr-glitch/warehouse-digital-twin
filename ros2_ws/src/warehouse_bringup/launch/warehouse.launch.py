@@ -242,6 +242,22 @@ def generate_launch_description():
         condition=IfCondition(is_multi),
     )
 
+    # In-world demo visualization: planned path ribbons, PICKUP/DROPOFF markers
+    # and floating robot goal labels rendered in the Gazebo world (observer
+    # only — reads /add_task, /task_assignment and per-robot task_state/plan/
+    # amcl_pose; never writes to navigation, fleet or package topics).
+    demo_visualization = Node(
+        package='warehouse_bringup',
+        executable='demo_visualization_node',
+        name='demo_visualization',
+        output='screen',
+        parameters=[{
+            'world': 'warehouse_world',
+            'robots': 'robot1,robot2',
+        }],
+        condition=IfCondition(is_multi),
+    )
+
     # Simulated localization: publishes each robot's ACTUAL Gazebo model pose
     # as /ns/amcl_pose (read from /world/.../pose/info). This is the ONE
     # source of truth — no odometry integration, so it can never drift from
@@ -287,6 +303,6 @@ def generate_launch_description():
         declare_args
         + [sim_launch, nav_single, gz_launch, robot1, robot2,
            analytics_launch, dashboard_launch, control_center_launch,
-           sim_localization_node, cube_launch, backend_ingest_launch,
-           fleet_launch]
+           sim_localization_node, cube_launch, demo_visualization,
+           backend_ingest_launch, fleet_launch]
     )
